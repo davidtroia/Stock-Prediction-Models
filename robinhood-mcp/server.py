@@ -540,6 +540,323 @@ def get_open_options_positions() -> list:
     ]
 
 
+@mcp.tool()
+def find_options_by_strike(
+    symbol: str,
+    strike_price: float,
+    option_type: str = "both",
+) -> list:
+    """
+    Find all option contracts for a stock at a specific strike price across
+    all available expiration dates.
+
+    Args:
+        symbol:       Stock ticker symbol (e.g. "AAPL")
+        strike_price: The exact strike price to look up
+        option_type:  "call", "put", or "both"
+    """
+    _ensure_auth()
+    contracts = r.find_options_for_stock_by_strike(
+        symbol, str(strike_price), optionType=option_type, info=None
+    )
+    return [_format_option_contract(c) for c in (contracts or [])]
+
+
+@mcp.tool()
+def find_options_near_money(
+    symbol: str,
+    expiration_date: Optional[str] = None,
+    option_type: str = "both",
+    num_strikes: int = 5,
+) -> list:
+    """
+    Find option contracts near the current stock price (ATM ± num_strikes
+    strikes). Useful for quickly surfacing the most liquid contracts.
+
+    Args:
+        symbol:          Stock ticker symbol (e.g. "AAPL")
+        expiration_date: Expiration date YYYY-MM-DD (None = nearest expiry)
+        option_type:     "call", "put", or "both"
+        num_strikes:     How many strikes above and below ATM to include (default 5)
+    """
+    _ensure_auth()
+    exp_dates = r.get_chains(symbol, info="expiration_dates")
+    if not exp_dates:
+        return []
+    target_date = expiration_date or exp_dates[0]
+
+    current_price_list = r.get_latest_price(symbol)
+    if not current_price_list:
+        return []
+    current_price = float(current_price_list[0])
+
+    types = ["call", "put"] if option_type == "both" else [option_type]
+    results = []
+    for otype in types:
+        contracts = r.find_options_for_stock_by_expiration(
+            symbol, target_date, optionType=otype, info=None
+        )
+        if not contracts:
+            continue
+        # Sort by how close each strike is to the current price
+        contracts.sort(key=lambda c: abs(float(c.get("strike_price", 0)) - current_price))
+        for c in contracts[: num_strikes * 2]:
+            results.append(_format_option_contract(c))
+    # Re-sort final list by expiration then strike for readability
+    results.sort(key=lambda c: (c.get("expiration_date", ""), float(c.get("strike_price") or 0)))
+    return results
+
+
+@mcp.tool()
+def get_option_market_data(
+    symbol: str,
+    expiration_date: str,
+    strike_price: float,
+    option_type: str,
+) -> dict:
+    """
+    Get current market data and Greeks for a specific option contract.
+
+    Args:
+        symbol:          Stock ticker symbol (e.g. "AAPL")
+        expiration_date: Expiration date in YYYY-MM-DD format
+        strike_price:    Strike price of the contract
+        option_type:     "call" or "put"
+    """
+    _ensure_auth()
+    data = r.get_option_market_data(
+        symbol, expiration_date, str(strike_price), option_type, info=None
+    )
+    if not data:
+        return {}
+    d = data[0] if isinstance(data, list) else data
+    return {
+        "symbol": symbol.upper(),
+        "expiration_date": expiration_date,
+        "strike_price": strike_price,
+        "type": option_type,
+        "ask_price": d.get("ask_price"),
+        "bid_price": d.get("bid_price"),
+        "last_trade_price": d.get("last_trade_price"),
+        "mark_price": d.get("adjusted_mark_price"),
+        "volume": d.get("volume"),
+        "open_interest": d.get("open_interest"),
+        "implied_volatility": d.get("implied_volatility"),
+        "delta": d.get("delta"),
+        "gamma": d.get("gamma"),
+        "theta": d.get("theta"),
+        "vega": d.get("vega"),
+        "rho": d.get("rho"),
+        "in_the_money": d.get("in_the_money"),
+        "intrinsic_value": d.get("intrinsic_value"),
+        "time_value": d.get("time_value"),
+        "chance_of_profit_long": d.get("chance_of_profit_long"),
+        "chance_of_profit_short": d.get("chance_of_profit_short"),
+        "break_even_price": d.get("break_even_price"),
+    }
+
+
+@mcp.tool()
+def buy_option_to_open(
+    symbol: str,
+    expiration_date: str,
+    strike_price: float,
+    option_type: str,
+    quantity: int,
+    limit_price: float,
+    time_in_force: str = "gfd",
+) -> dict:
+    """
+    Buy to open an option contract (enter a new long position).
+
+    Cost = limit_price × quantity × 100 (each contract covers 100 shares).
+
+    Args:
+        symbol:          Stock ticker symbol (e.g. "AAPL")
+        expiration_date: Expiration date YYYY-MM-DD
+        strike_price:    Strike price of the contract
+        option_type:     "call" or "put"
+        quantity:        Number of contracts to buy
+        limit_price:     Maximum premium per share to pay (e.g. 1.50 = $150/contract)
+        time_in_force:   "gfd" (good for day) or "gtc" (good till cancelled)
+    """
+    _ensure_auth()
+    order = r.order_buy_option_limit(
+        positionEffect="open",
+        creditOrDebit="debit",
+        price=limit_price,
+        symbol=symbol,
+        quantity=quantity,
+        expirationDate=expiration_date,
+        strike=str(strike_price),
+        optionType=option_type,
+        timeInForce=time_in_force,
+    )
+    return _format_option_order(order)
+
+
+@mcp.tool()
+def sell_option_to_close(
+    symbol: str,
+    expiration_date: str,
+    strike_price: float,
+    option_type: str,
+    quantity: int,
+    limit_price: float,
+    time_in_force: str = "gfd",
+) -> dict:
+    """
+    Sell to close an existing long option position.
+
+    Args:
+        symbol:          Stock ticker symbol (e.g. "AAPL")
+        expiration_date: Expiration date YYYY-MM-DD
+        strike_price:    Strike price of the contract
+        option_type:     "call" or "put"
+        quantity:        Number of contracts to sell
+        limit_price:     Minimum premium per share to accept
+        time_in_force:   "gfd" or "gtc"
+    """
+    _ensure_auth()
+    order = r.order_sell_option_limit(
+        positionEffect="close",
+        creditOrDebit="credit",
+        price=limit_price,
+        symbol=symbol,
+        quantity=quantity,
+        expirationDate=expiration_date,
+        strike=str(strike_price),
+        optionType=option_type,
+        timeInForce=time_in_force,
+    )
+    return _format_option_order(order)
+
+
+@mcp.tool()
+def sell_option_to_open(
+    symbol: str,
+    expiration_date: str,
+    strike_price: float,
+    option_type: str,
+    quantity: int,
+    limit_price: float,
+    time_in_force: str = "gfd",
+) -> dict:
+    """
+    Sell to open (write) an option contract, entering a short position and
+    collecting premium upfront. Requires margin approval for uncovered positions.
+
+    Args:
+        symbol:          Stock ticker symbol (e.g. "AAPL")
+        expiration_date: Expiration date YYYY-MM-DD
+        strike_price:    Strike price of the contract
+        option_type:     "call" or "put"
+        quantity:        Number of contracts to write
+        limit_price:     Minimum premium per share to collect
+        time_in_force:   "gfd" or "gtc"
+    """
+    _ensure_auth()
+    order = r.order_sell_option_limit(
+        positionEffect="open",
+        creditOrDebit="credit",
+        price=limit_price,
+        symbol=symbol,
+        quantity=quantity,
+        expirationDate=expiration_date,
+        strike=str(strike_price),
+        optionType=option_type,
+        timeInForce=time_in_force,
+    )
+    return _format_option_order(order)
+
+
+@mcp.tool()
+def buy_option_to_close(
+    symbol: str,
+    expiration_date: str,
+    strike_price: float,
+    option_type: str,
+    quantity: int,
+    limit_price: float,
+    time_in_force: str = "gfd",
+) -> dict:
+    """
+    Buy to close a short option position (covers a previously written contract).
+
+    Args:
+        symbol:          Stock ticker symbol (e.g. "AAPL")
+        expiration_date: Expiration date YYYY-MM-DD
+        strike_price:    Strike price of the contract
+        option_type:     "call" or "put"
+        quantity:        Number of contracts to buy back
+        limit_price:     Maximum premium per share to pay
+        time_in_force:   "gfd" or "gtc"
+    """
+    _ensure_auth()
+    order = r.order_buy_option_limit(
+        positionEffect="close",
+        creditOrDebit="debit",
+        price=limit_price,
+        symbol=symbol,
+        quantity=quantity,
+        expirationDate=expiration_date,
+        strike=str(strike_price),
+        optionType=option_type,
+        timeInForce=time_in_force,
+    )
+    return _format_option_order(order)
+
+
+@mcp.tool()
+def get_open_option_orders() -> list:
+    """
+    List all currently open (unfilled/pending) option orders.
+    """
+    _ensure_auth()
+    orders = r.get_all_open_option_orders(info=None)
+    return [_format_option_order(o) for o in (orders or [])]
+
+
+@mcp.tool()
+def get_option_order_history(count: int = 50) -> list:
+    """
+    Get recent option order history for the account.
+
+    Args:
+        count: Number of recent orders to return (default 50, max 100)
+    """
+    _ensure_auth()
+    orders = r.get_all_option_orders(info=None)
+    if not orders:
+        return []
+    return [_format_option_order(o) for o in orders[: min(count, 100)]]
+
+
+@mcp.tool()
+def cancel_option_order(order_id: str) -> dict:
+    """
+    Cancel an open option order by its order ID.
+
+    Args:
+        order_id: The UUID of the option order to cancel
+    """
+    _ensure_auth()
+    result = r.cancel_option_order(order_id)
+    if result is None:
+        return {"status": "cancelled", "order_id": order_id}
+    return {"status": "error", "detail": str(result)}
+
+
+@mcp.tool()
+def cancel_all_option_orders() -> dict:
+    """
+    Cancel all currently open option orders on the account.
+    """
+    _ensure_auth()
+    r.cancel_all_option_orders()
+    return {"status": "all_open_option_orders_cancelled"}
+
+
 # ---------------------------------------------------------------------------
 # Crypto
 # ---------------------------------------------------------------------------
@@ -670,6 +987,54 @@ def remove_from_watchlist(symbol: str, name: str = "Default") -> dict:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _format_option_contract(c: dict) -> dict:
+    return {
+        "type": c.get("type"),
+        "strike_price": c.get("strike_price"),
+        "expiration_date": c.get("expiration_date"),
+        "ask_price": c.get("ask_price"),
+        "bid_price": c.get("bid_price"),
+        "last_trade_price": c.get("last_trade_price"),
+        "volume": c.get("volume"),
+        "open_interest": c.get("open_interest"),
+        "implied_volatility": c.get("implied_volatility"),
+        "delta": c.get("delta"),
+        "gamma": c.get("gamma"),
+        "theta": c.get("theta"),
+        "vega": c.get("vega"),
+        "rho": c.get("rho"),
+        "in_the_money": c.get("in_the_money"),
+        "chance_of_profit_long": c.get("chance_of_profit_long"),
+        "chance_of_profit_short": c.get("chance_of_profit_short"),
+    }
+
+
+def _format_option_order(order: dict) -> dict:
+    if not order:
+        return {}
+    legs = order.get("legs", [{}])
+    leg = legs[0] if legs else {}
+    return {
+        "id": order.get("id"),
+        "symbol": order.get("chain_symbol"),
+        "option_type": leg.get("option_type") or order.get("option_type"),
+        "strike_price": leg.get("strike_price"),
+        "expiration_date": leg.get("expiration_date"),
+        "side": leg.get("side"),
+        "position_effect": leg.get("position_effect"),
+        "quantity": order.get("quantity"),
+        "filled_quantity": order.get("processed_quantity"),
+        "limit_price": order.get("premium"),
+        "average_price": order.get("processed_premium"),
+        "state": order.get("state"),
+        "time_in_force": order.get("time_in_force"),
+        "created_at": order.get("created_at"),
+        "updated_at": order.get("updated_at"),
+        "closing_strategy": order.get("closing_strategy"),
+        "opening_strategy": order.get("opening_strategy"),
+    }
+
 
 def _format_order(order: dict) -> dict:
     if not order:

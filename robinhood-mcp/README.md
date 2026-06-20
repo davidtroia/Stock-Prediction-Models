@@ -92,12 +92,31 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 | `cancel_order` | Cancel a specific order by ID |
 | `cancel_all_open_orders` | Cancel every open order at once |
 
-### Options
+### Options — Discovery
 | Tool | Description |
 |---|---|
 | `get_options_expiration_dates` | Available expiration dates for a symbol |
-| `get_options_chain` | Full options chain with Greeks (calls, puts, or both) |
+| `get_options_chain` | Full chain (calls, puts, or both) with Greeks for a given expiry |
+| `find_options_by_strike` | All contracts at a specific strike price across all expirations |
+| `find_options_near_money` | ATM ± N strikes for rapid liquidity scanning |
+| `get_option_market_data` | Live bid/ask, Greeks, IV, break-even, and chance-of-profit for one contract |
+
+### Options — Trading
+| Tool | Description |
+|---|---|
+| `buy_option_to_open` | Buy to open a long call or put position |
+| `sell_option_to_close` | Sell to close an existing long position |
+| `sell_option_to_open` | Write (sell to open) a call or put — collects premium |
+| `buy_option_to_close` | Buy to close a short (written) position |
+
+### Options — Order Management
+| Tool | Description |
+|---|---|
 | `get_open_options_positions` | Current open options positions |
+| `get_open_option_orders` | All pending/unfilled option orders |
+| `get_option_order_history` | Recent option order history |
+| `cancel_option_order` | Cancel a specific option order by ID |
+| `cancel_all_option_orders` | Cancel every open option order at once |
 
 ### Crypto
 | Tool | Description |
