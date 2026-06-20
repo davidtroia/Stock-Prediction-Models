@@ -11,6 +11,7 @@ import json
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
 import robin_stocks.robinhood as r
+from decimal import Decimal, ROUND_DOWN
 
 mcp = FastMCP("robinhood-trading")
 
@@ -102,6 +103,224 @@ def get_total_equity() -> dict:
         "cash": account.get("cash"),
         "buying_power": account.get("buying_power"),
     }
+
+
+@mcp.tool()
+def get_portfolio_allocation() -> dict:
+    """
+    Show how your portfolio is currently allocated as dollar values and
+    percentages of total equity. Includes cash as its own line item.
+
+    Returns a summary with each position's weight so you can see at a
+    glance whether you're over- or under-weight in any holding.
+    """
+    _ensure_auth()
+    holdings = r.build_holdings()
+    account = r.load_account_profile(info=None)
+    cash = float(account.get("cash") or 0)
+
+    positions = {}
+    total_stocks = 0.0
+    for symbol, data in holdings.items():
+        equity = float(data.get("equity") or 0)
+        positions[symbol] = equity
+        total_stocks += equity
+
+    total = total_stocks + cash
+    if total == 0:
+        return {"error": "Portfolio appears empty"}
+
+    allocation = {}
+    for symbol, equity in positions.items():
+        data = holdings[symbol]
+        allocation[symbol] = {
+            "value": round(equity, 2),
+            "percentage": round(equity / total * 100, 2),
+            "shares": data.get("quantity"),
+            "current_price": data.get("price"),
+            "average_buy_price": data.get("average_buy_price"),
+        }
+
+    allocation["CASH"] = {
+        "value": round(cash, 2),
+        "percentage": round(cash / total * 100, 2),
+    }
+
+    return {
+        "total_equity": round(total, 2),
+        "allocation": allocation,
+    }
+
+
+@mcp.tool()
+def calculate_rebalance_trades(targets: dict) -> dict:
+    """
+    Dry-run: calculate what buy/sell trades would be needed to rebalance your
+    portfolio to a set of target percentage allocations. No orders are placed.
+
+    The targets dict maps ticker symbols (or "CASH") to their desired
+    percentage of total portfolio value. Percentages must add up to 100.
+
+    Example targets: {"AAPL": 40, "TSLA": 30, "MSFT": 20, "CASH": 10}
+
+    Returns:
+        - Each position's current vs. target value
+        - The action required (buy / sell / hold)
+        - The estimated number of shares involved
+        - A warning if the percentages don't sum to 100
+    """
+    _ensure_auth()
+    total_pct = sum(targets.values())
+    warnings = []
+    if abs(total_pct - 100) > 0.5:
+        warnings.append(f"Target percentages sum to {total_pct:.1f}%, not 100%. Trades are scaled proportionally.")
+
+    holdings = r.build_holdings()
+    account = r.load_account_profile(info=None)
+    cash = float(account.get("cash") or 0)
+
+    # Build current values map
+    current_values: dict[str, float] = {"CASH": cash}
+    for symbol, data in holdings.items():
+        current_values[symbol] = float(data.get("equity") or 0)
+
+    total_equity = sum(current_values.values())
+    if total_equity == 0:
+        return {"error": "Portfolio appears empty"}
+
+    # Fetch current prices for all symbols we might need to trade
+    all_symbols = set(list(holdings.keys()) + [s for s in targets if s != "CASH"])
+    prices: dict[str, float] = {}
+    for sym in all_symbols:
+        p = r.get_latest_price(sym)
+        if p and p[0]:
+            prices[sym] = float(p[0])
+
+    scale = 100 / total_pct  # normalise if percentages don't sum to 100
+    trades = []
+    for symbol, target_pct in targets.items():
+        if symbol == "CASH":
+            continue
+        target_value = total_equity * (target_pct * scale / 100)
+        current_value = current_values.get(symbol, 0.0)
+        diff = target_value - current_value
+        price = prices.get(symbol)
+
+        shares_delta = None
+        if price and price > 0:
+            shares_delta = round(diff / price, 6)
+
+        action = "hold"
+        if diff > 0.01:
+            action = "buy"
+        elif diff < -0.01:
+            action = "sell"
+
+        trades.append({
+            "symbol": symbol,
+            "current_value": round(current_value, 2),
+            "target_value": round(target_value, 2),
+            "target_pct": target_pct,
+            "difference_dollars": round(diff, 2),
+            "current_price": price,
+            "shares_to_trade": shares_delta,
+            "action": action,
+        })
+
+    # Handle positions not in the target (will be fully sold)
+    for symbol in holdings:
+        if symbol not in targets:
+            current_value = current_values.get(symbol, 0.0)
+            price = prices.get(symbol)
+            shares_delta = round(-current_value / price, 6) if price else None
+            trades.append({
+                "symbol": symbol,
+                "current_value": round(current_value, 2),
+                "target_value": 0.0,
+                "target_pct": 0,
+                "difference_dollars": round(-current_value, 2),
+                "current_price": price,
+                "shares_to_trade": shares_delta,
+                "action": "sell_all",
+            })
+
+    trades.sort(key=lambda t: t["action"])
+    return {
+        "total_equity": round(total_equity, 2),
+        "trades": trades,
+        "warnings": warnings,
+    }
+
+
+@mcp.tool()
+def rebalance_portfolio(targets: dict, dry_run: bool = True) -> dict:
+    """
+    Rebalance your portfolio to a set of target percentage allocations by
+    placing the necessary market orders.
+
+    IMPORTANT: Set dry_run=False to actually place orders. By default this
+    runs in dry_run=True mode and only shows what would happen — no trades
+    are executed. Always review the dry-run output before committing real money.
+
+    The targets dict maps ticker symbols to their desired percentage of total
+    portfolio value. Percentages should sum to 100. "CASH" is reserved and
+    skipped (cash level is the remainder after all buys/sells settle).
+
+    Example targets: {"AAPL": 40, "TSLA": 30, "MSFT": 30}
+
+    Strategy:
+      1. Sells are placed first to free up buying power.
+      2. Buys are placed after.
+      3. All orders are fractional market orders so they fill immediately.
+
+    Args:
+        targets:  Dict of symbol → target percentage (e.g. {"AAPL": 50, "TSLA": 50})
+        dry_run:  If True (default), only calculate and return the plan. Set
+                  False to actually place orders.
+    """
+    _ensure_auth()
+
+    # Reuse calculate_rebalance_trades logic
+    plan = calculate_rebalance_trades(targets)
+    if "error" in plan:
+        return plan
+
+    if dry_run:
+        plan["status"] = "dry_run — set dry_run=False to execute"
+        return plan
+
+    results = {"sells": [], "buys": [], "skipped": [], "warnings": plan.get("warnings", [])}
+
+    # Place sells first to free up cash
+    for trade in plan["trades"]:
+        sym = trade["symbol"]
+        action = trade["action"]
+        shares = trade.get("shares_to_trade")
+
+        if shares is None or abs(shares) < 0.000001:
+            results["skipped"].append({"symbol": sym, "reason": "negligible size"})
+            continue
+
+        if action in ("sell", "sell_all"):
+            shares_to_sell = abs(shares)
+            order = r.order_sell_fractional_by_quantity(sym, shares_to_sell, timeInForce="gfd", extendedHours=False)
+            results["sells"].append({"symbol": sym, "shares": shares_to_sell, "order": _format_order(order)})
+
+    # Place buys after sells have freed up cash
+    for trade in plan["trades"]:
+        sym = trade["symbol"]
+        action = trade["action"]
+        shares = trade.get("shares_to_trade")
+        diff = trade.get("difference_dollars", 0)
+
+        if action == "buy" and shares and diff > 0.01:
+            order = r.order_buy_fractional_by_price(sym, round(diff, 2), timeInForce="gfd", extendedHours=False)
+            results["buys"].append({"symbol": sym, "dollar_amount": round(diff, 2), "order": _format_order(order)})
+
+    results["status"] = "executed"
+    results["total_equity"] = plan["total_equity"]
+    results["plan"] = plan["trades"]
+    return results
 
 
 # ---------------------------------------------------------------------------

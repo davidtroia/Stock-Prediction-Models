@@ -67,6 +67,9 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 | `get_account_info` | Account number, buying power, cash balance, portfolio value |
 | `get_portfolio_holdings` | All stock positions with quantity, cost basis, and current value |
 | `get_total_equity` | Summary of total equity, extended-hours value, and cash |
+| `get_portfolio_allocation` | Current holdings as dollar values and % of total equity (including cash) |
+| `calculate_rebalance_trades` | Dry-run: see exactly what trades are needed to hit target allocations |
+| `rebalance_portfolio` | Rebalance to target allocations — dry_run=True by default, set False to execute |
 
 ### Market Data
 | Tool | Description |
