@@ -44,6 +44,142 @@ def _ensure_auth() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Guardrails — loaded from env vars, with safe defaults
+# ---------------------------------------------------------------------------
+
+def _load_guardrails() -> dict:
+    """
+    Read trading limits from environment variables. If not set, conservative
+    defaults are used. All limits are enforced before any order is placed.
+
+    Configure in your .env file:
+        MAX_POSITION_PCT=10          # max % of portfolio in one stock
+        MAX_SINGLE_TRADE_USD=1000    # max dollar size of any single order
+        MIN_CASH_RESERVE_PCT=10      # always keep this % as cash
+        DAILY_LOSS_LIMIT_PCT=3       # halt trading if portfolio drops this % today
+        MAX_SECTOR_PCT=30            # max % in any one sector
+        REQUIRE_CONFIRMATION_ABOVE=500  # ask for explicit confirmation for trades > $X
+        ALLOWED_SYMBOLS=             # comma-separated whitelist, empty = all allowed
+        BLOCKED_SYMBOLS=             # comma-separated blacklist, always blocked
+    """
+    def _pct(key, default):
+        try:
+            return float(os.environ.get(key, default))
+        except ValueError:
+            return float(default)
+
+    return {
+        "max_position_pct":           _pct("MAX_POSITION_PCT", 10),
+        "max_single_trade_usd":       _pct("MAX_SINGLE_TRADE_USD", 1000),
+        "min_cash_reserve_pct":       _pct("MIN_CASH_RESERVE_PCT", 10),
+        "daily_loss_limit_pct":       _pct("DAILY_LOSS_LIMIT_PCT", 3),
+        "max_sector_pct":             _pct("MAX_SECTOR_PCT", 30),
+        "require_confirmation_above": _pct("REQUIRE_CONFIRMATION_ABOVE", 500),
+        "allowed_symbols": [s.strip().upper() for s in os.environ.get("ALLOWED_SYMBOLS", "").split(",") if s.strip()],
+        "blocked_symbols": [s.strip().upper() for s in os.environ.get("BLOCKED_SYMBOLS", "").split(",") if s.strip()],
+    }
+
+
+def _check_guardrails(symbol: str, trade_value_usd: float, side: str = "buy") -> dict:
+    """
+    Validate a proposed trade against all active guardrails.
+    Returns {"ok": True} if safe, or {"ok": False, "blocked_by": [...reasons...]} if not.
+    Called internally before every order function.
+    """
+    _ensure_auth()
+    limits = _load_guardrails()
+    blocks = []
+
+    sym = symbol.upper()
+
+    # 1. Blocked symbol check
+    if sym in limits["blocked_symbols"]:
+        blocks.append(f"{sym} is on the blocked symbols list")
+
+    # 2. Whitelist check (only if a whitelist is defined)
+    if limits["allowed_symbols"] and sym not in limits["allowed_symbols"]:
+        blocks.append(f"{sym} is not on the allowed symbols whitelist: {limits['allowed_symbols']}")
+
+    # 3. Single trade size cap
+    if trade_value_usd > limits["max_single_trade_usd"]:
+        blocks.append(
+            f"Trade value ${trade_value_usd:.2f} exceeds MAX_SINGLE_TRADE_USD "
+            f"(${limits['max_single_trade_usd']:.0f})"
+        )
+
+    if side == "buy":
+        account  = r.load_account_profile(info=None)
+        portfolio = r.load_portfolio_profile(info=None)
+        total_equity = float(portfolio.get("equity") or 0)
+        cash = float(account.get("cash") or 0)
+
+        # 4. Cash reserve check
+        min_cash = total_equity * limits["min_cash_reserve_pct"] / 100
+        cash_after = cash - trade_value_usd
+        if cash_after < min_cash:
+            blocks.append(
+                f"Trade would leave ${cash_after:.2f} cash, below the "
+                f"{limits['min_cash_reserve_pct']:.0f}% reserve requirement (${min_cash:.2f})"
+            )
+
+        # 5. Position concentration check
+        holdings = r.build_holdings()
+        current_position_value = float(holdings.get(sym, {}).get("equity") or 0)
+        new_position_value = current_position_value + trade_value_usd
+        position_pct = new_position_value / total_equity * 100 if total_equity > 0 else 0
+        if position_pct > limits["max_position_pct"]:
+            blocks.append(
+                f"This buy would make {sym} {position_pct:.1f}% of portfolio, "
+                f"exceeding MAX_POSITION_PCT ({limits['max_position_pct']:.0f}%)"
+            )
+
+        # 6. Daily loss limit check
+        prev_equity = float(portfolio.get("adjusted_equity_previous_close") or total_equity)
+        if prev_equity > 0:
+            daily_loss_pct = (prev_equity - total_equity) / prev_equity * 100
+            if daily_loss_pct > limits["daily_loss_limit_pct"]:
+                blocks.append(
+                    f"Portfolio is already down {daily_loss_pct:.1f}% today — "
+                    f"DAILY_LOSS_LIMIT_PCT ({limits['daily_loss_limit_pct']:.0f}%) hit. "
+                    f"No new buys until tomorrow."
+                )
+
+    if blocks:
+        return {"ok": False, "blocked_by": blocks}
+    return {"ok": True}
+
+
+@mcp.tool()
+def get_trading_limits() -> dict:
+    """
+    Show all active guardrails and trading limits currently configured for
+    this server. Review these before placing any trades.
+
+    Limits can be changed by editing your .env file and restarting the server.
+    """
+    return _load_guardrails()
+
+
+@mcp.tool()
+def check_trade(symbol: str, trade_value_usd: float, side: str = "buy") -> dict:
+    """
+    Dry-check whether a proposed trade would pass all guardrails without
+    actually placing it. Use this to validate any trade before executing.
+
+    Args:
+        symbol:          Stock ticker (e.g. "AAPL")
+        trade_value_usd: Dollar value of the proposed trade
+        side:            "buy" or "sell"
+    """
+    result = _check_guardrails(symbol, trade_value_usd, side)
+    result["symbol"] = symbol.upper()
+    result["trade_value_usd"] = trade_value_usd
+    result["side"] = side
+    result["active_limits"] = _load_guardrails()
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Account & Portfolio
 # ---------------------------------------------------------------------------
 
@@ -532,13 +668,20 @@ def get_earnings(symbol: str) -> list:
 @mcp.tool()
 def place_market_buy_order(symbol: str, quantity: float) -> dict:
     """
-    Place a market buy order for a stock.
+    Place a market buy order for a stock. Guardrails are checked automatically
+    before the order is submitted.
 
     Args:
         symbol:   Stock ticker symbol (e.g. "AAPL")
         quantity: Number of shares to buy (fractional shares supported)
     """
     _ensure_auth()
+    price_list = r.get_latest_price(symbol)
+    price = float(price_list[0]) if price_list and price_list[0] else 0
+    trade_value = price * quantity
+    guard = _check_guardrails(symbol, trade_value, "buy")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_buy_market(symbol, quantity, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
@@ -546,7 +689,7 @@ def place_market_buy_order(symbol: str, quantity: float) -> dict:
 @mcp.tool()
 def place_limit_buy_order(symbol: str, quantity: float, limit_price: float) -> dict:
     """
-    Place a limit buy order for a stock.
+    Place a limit buy order for a stock. Guardrails are checked automatically.
 
     Args:
         symbol:      Stock ticker symbol (e.g. "AAPL")
@@ -554,6 +697,10 @@ def place_limit_buy_order(symbol: str, quantity: float, limit_price: float) -> d
         limit_price: Maximum price per share to pay
     """
     _ensure_auth()
+    trade_value = limit_price * quantity
+    guard = _check_guardrails(symbol, trade_value, "buy")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_buy_limit(symbol, quantity, limit_price, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
@@ -561,13 +708,18 @@ def place_limit_buy_order(symbol: str, quantity: float, limit_price: float) -> d
 @mcp.tool()
 def place_market_sell_order(symbol: str, quantity: float) -> dict:
     """
-    Place a market sell order for a stock.
+    Place a market sell order for a stock. Guardrails are checked automatically.
 
     Args:
         symbol:   Stock ticker symbol (e.g. "AAPL")
         quantity: Number of shares to sell
     """
     _ensure_auth()
+    price_list = r.get_latest_price(symbol)
+    price = float(price_list[0]) if price_list and price_list[0] else 0
+    guard = _check_guardrails(symbol, price * quantity, "sell")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_sell_market(symbol, quantity, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
@@ -575,7 +727,7 @@ def place_market_sell_order(symbol: str, quantity: float) -> dict:
 @mcp.tool()
 def place_limit_sell_order(symbol: str, quantity: float, limit_price: float) -> dict:
     """
-    Place a limit sell order for a stock.
+    Place a limit sell order for a stock. Guardrails are checked automatically.
 
     Args:
         symbol:      Stock ticker symbol (e.g. "AAPL")
@@ -583,6 +735,9 @@ def place_limit_sell_order(symbol: str, quantity: float, limit_price: float) -> 
         limit_price: Minimum price per share to accept
     """
     _ensure_auth()
+    guard = _check_guardrails(symbol, limit_price * quantity, "sell")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_sell_limit(symbol, quantity, limit_price, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
@@ -590,8 +745,8 @@ def place_limit_sell_order(symbol: str, quantity: float, limit_price: float) -> 
 @mcp.tool()
 def place_stop_loss_order(symbol: str, quantity: float, stop_price: float) -> dict:
     """
-    Place a stop-loss sell order. Triggers a market sell when the price
-    falls to or below stop_price.
+    Place a stop-loss sell order. Triggers a market sell when price drops to
+    stop_price. Guardrails are checked automatically.
 
     Args:
         symbol:     Stock ticker symbol (e.g. "AAPL")
@@ -599,6 +754,9 @@ def place_stop_loss_order(symbol: str, quantity: float, stop_price: float) -> di
         stop_price: Price at which the stop order is triggered
     """
     _ensure_auth()
+    guard = _check_guardrails(symbol, stop_price * quantity, "sell")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_sell_stop_loss(symbol, quantity, stop_price, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
@@ -612,8 +770,8 @@ def place_stop_limit_order(
     side: str = "sell",
 ) -> dict:
     """
-    Place a stop-limit order. When the stop price is triggered, a limit order
-    is submitted at limit_price.
+    Place a stop-limit order. When stop_price is triggered, a limit order
+    is submitted at limit_price. Guardrails are checked automatically.
 
     Args:
         symbol:      Stock ticker symbol (e.g. "AAPL")
@@ -623,6 +781,9 @@ def place_stop_limit_order(
         side:        "buy" or "sell"
     """
     _ensure_auth()
+    guard = _check_guardrails(symbol, limit_price * quantity, side)
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     if side == "sell":
         order = r.order_sell_stop_limit(symbol, quantity, limit_price, stop_price, timeInForce="gtc")
     else:
