@@ -95,6 +95,34 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 | `cancel_order` | Cancel a specific order by ID |
 | `cancel_all_open_orders` | Cancel every open order at once |
 
+### Market Intelligence
+| Tool | Description |
+|---|---|
+| `get_market_overview` | S&P 500, NASDAQ, Dow, Russell 2000, VIX, 10-yr yield, gold, oil |
+| `get_sector_performance` | All 11 S&P 500 sectors ranked by performance for any period |
+| `get_analyst_consensus` | Analyst ratings, price targets, implied upside, recent upgrades/downgrades |
+| `get_institutional_holdings` | Top institutions and mutual funds holding a stock |
+| `compare_stocks` | Side-by-side fundamental comparison of multiple stocks |
+
+### Technical Analysis
+| Tool | Description |
+|---|---|
+| `get_technical_analysis` | RSI, MACD, Bollinger Bands, SMA/EMA, volume — with plain-English signals |
+| `scan_watchlist` | Run TA across a list of stocks and rank by bullish signal count |
+
+### Options Intelligence
+| Tool | Description |
+|---|---|
+| `calculate_black_scholes` | Theoretical fair value + Greeks — compare to market price to find mispricings |
+| `analyze_volatility` | IV vs historical vol — tells you whether options are cheap or expensive |
+
+### Portfolio Optimization & Risk
+| Tool | Description |
+|---|---|
+| `optimize_portfolio` | Modern Portfolio Theory — finds max-Sharpe, min-vol, or max-return weights |
+| `get_portfolio_risk_metrics` | Sharpe, Sortino, max drawdown, beta, annualized return, correlation matrix |
+| `calculate_position_size` | Kelly Criterion — how much to bet per trade given your win rate and R:R ratio |
+
 ### Options — Discovery
 | Tool | Description |
 |---|---|

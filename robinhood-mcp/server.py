@@ -13,6 +13,12 @@ from mcp.server.fastmcp import FastMCP
 import robin_stocks.robinhood as r
 from decimal import Decimal, ROUND_DOWN
 
+import numpy as np
+import pandas as pd
+import pandas_ta as ta
+import yfinance as yf
+from scipy.stats import norm
+
 mcp = FastMCP("robinhood-trading")
 
 # ---------------------------------------------------------------------------
@@ -1291,6 +1297,684 @@ def _format_crypto_order(order: dict) -> dict:
         "state": order.get("state"),
         "time_in_force": order.get("time_in_force"),
         "created_at": order.get("created_at"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Market Intelligence
+# ---------------------------------------------------------------------------
+
+_SECTOR_ETFS = {
+    "Technology": "XLK",
+    "Financials": "XLF",
+    "Healthcare": "XLV",
+    "Energy": "XLE",
+    "Consumer Discretionary": "XLY",
+    "Consumer Staples": "XLP",
+    "Industrials": "XLI",
+    "Materials": "XLB",
+    "Real Estate": "XLRE",
+    "Utilities": "XLU",
+    "Communication Services": "XLC",
+}
+
+
+@mcp.tool()
+def get_market_overview() -> dict:
+    """
+    Quick pre-session snapshot of major US indices (S&P 500, NASDAQ, Dow,
+    Russell 2000), the VIX fear gauge, 10-yr treasury yield, gold, and WTI
+    oil — each with price and % change from prior close.
+    """
+    symbols = {
+        "sp500": "^GSPC",
+        "nasdaq": "^IXIC",
+        "dow": "^DJI",
+        "russell_2000": "^RUT",
+        "vix": "^VIX",
+        "ten_yr_yield": "^TNX",
+        "gold": "GC=F",
+        "oil_wti": "CL=F",
+    }
+    result = {}
+    for name, sym in symbols.items():
+        try:
+            hist = yf.Ticker(sym).history(period="5d")
+            hist = hist[hist["Volume"] > 0] if "Volume" in hist.columns else hist
+            if len(hist) >= 2:
+                prev = float(hist["Close"].iloc[-2])
+                last = float(hist["Close"].iloc[-1])
+                result[name] = {
+                    "symbol": sym,
+                    "price": round(last, 2),
+                    "change_pct": round((last - prev) / prev * 100, 2),
+                    "prev_close": round(prev, 2),
+                }
+        except Exception as e:
+            result[name] = {"error": str(e)}
+    return result
+
+
+@mcp.tool()
+def get_sector_performance(period: str = "1mo") -> list:
+    """
+    Show which of the 11 S&P 500 sectors are leading or lagging over a given
+    period — essential for sector rotation strategies.
+
+    Args:
+        period: "1d", "5d", "1mo", "3mo", "6mo", "1y"
+    """
+    results = []
+    for sector, etf in _SECTOR_ETFS.items():
+        try:
+            hist = yf.Ticker(etf).history(period=period)
+            if len(hist) >= 2:
+                start = float(hist["Close"].iloc[0])
+                end = float(hist["Close"].iloc[-1])
+                results.append({
+                    "sector": sector,
+                    "etf": etf,
+                    "performance_pct": round((end - start) / start * 100, 2),
+                    "current_price": round(end, 2),
+                })
+        except:
+            pass
+    results.sort(key=lambda x: x["performance_pct"], reverse=True)
+    return results
+
+
+@mcp.tool()
+def get_analyst_consensus(symbol: str) -> dict:
+    """
+    Wall Street analyst consensus for a stock: buy/hold/sell rating,
+    mean price target, implied upside/downside, and the 10 most recent
+    analyst actions (upgrades, downgrades, initiations).
+
+    Args:
+        symbol: Stock ticker (e.g. "AAPL")
+    """
+    t = yf.Ticker(symbol)
+    info = t.info
+    recs = t.recommendations
+
+    current = info.get("currentPrice")
+    target = info.get("targetMeanPrice")
+    upside = round((target - current) / current * 100, 1) if current and target else None
+
+    recent_actions = []
+    if recs is not None and not recs.empty:
+        for _, row in recs.tail(10).reset_index().iterrows():
+            recent_actions.append({
+                "date": str(row.get("Date", row.get("date", ""))),
+                "firm": row.get("Firm", ""),
+                "to_grade": row.get("To Grade", ""),
+                "from_grade": row.get("From Grade", ""),
+                "action": row.get("Action", ""),
+            })
+
+    return {
+        "symbol": symbol.upper(),
+        "current_price": current,
+        "target_mean": target,
+        "target_high": info.get("targetHighPrice"),
+        "target_low": info.get("targetLowPrice"),
+        "upside_pct": upside,
+        "analyst_count": info.get("numberOfAnalystOpinions"),
+        "recommendation": info.get("recommendationKey"),
+        "recommendation_mean": info.get("recommendationMean"),
+        "recent_actions": recent_actions,
+    }
+
+
+@mcp.tool()
+def get_institutional_holdings(symbol: str) -> dict:
+    """
+    See which major funds and institutions own a stock, their share counts,
+    and what percentage of the float they hold. High and rising institutional
+    ownership is a bullish signal.
+
+    Args:
+        symbol: Stock ticker (e.g. "AAPL")
+    """
+    t = yf.Ticker(symbol)
+    info = t.info
+
+    def _rows(df, n=10):
+        if df is None or df.empty:
+            return []
+        out = []
+        for _, row in df.head(n).iterrows():
+            out.append({k: (int(v) if isinstance(v, (np.integer,)) else
+                           float(round(v, 4)) if isinstance(v, (float, np.floating)) else
+                           str(v)) for k, v in row.items()})
+        return out
+
+    return {
+        "symbol": symbol.upper(),
+        "institutional_ownership_pct": info.get("heldPercentInstitutions"),
+        "insider_ownership_pct": info.get("heldPercentInsiders"),
+        "float_shares": info.get("floatShares"),
+        "top_institutions": _rows(t.institutional_holders),
+        "top_mutual_funds": _rows(t.mutualfund_holders),
+    }
+
+
+@mcp.tool()
+def compare_stocks(symbols: list) -> list:
+    """
+    Side-by-side fundamental comparison of multiple stocks — price, valuation
+    ratios (P/E, PEG, P/S, P/B, EV/EBITDA), growth, profitability, and
+    analyst consensus. Useful for picking the best name in a sector.
+
+    Args:
+        symbols: List of tickers (e.g. ["AAPL", "MSFT", "GOOGL"])
+    """
+    results = []
+    for sym in symbols:
+        try:
+            info = yf.Ticker(sym).info
+            results.append({
+                "symbol": sym.upper(),
+                "name": info.get("shortName"),
+                "sector": info.get("sector"),
+                "market_cap": info.get("marketCap"),
+                "price": info.get("currentPrice"),
+                "pe_ratio": info.get("trailingPE"),
+                "forward_pe": info.get("forwardPE"),
+                "peg_ratio": info.get("pegRatio"),
+                "ps_ratio": info.get("priceToSalesTrailing12Months"),
+                "pb_ratio": info.get("priceToBook"),
+                "ev_ebitda": info.get("enterpriseToEbitda"),
+                "profit_margin": info.get("profitMargins"),
+                "revenue_growth": info.get("revenueGrowth"),
+                "earnings_growth": info.get("earningsGrowth"),
+                "roe": info.get("returnOnEquity"),
+                "debt_to_equity": info.get("debtToEquity"),
+                "free_cash_flow": info.get("freeCashflow"),
+                "dividend_yield": info.get("dividendYield"),
+                "beta": info.get("beta"),
+                "52w_high": info.get("fiftyTwoWeekHigh"),
+                "52w_low": info.get("fiftyTwoWeekLow"),
+                "analyst_target": info.get("targetMeanPrice"),
+                "recommendation": info.get("recommendationKey"),
+            })
+        except Exception as e:
+            results.append({"symbol": sym.upper(), "error": str(e)})
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Technical Analysis
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_technical_analysis(symbol: str, period: str = "6mo") -> dict:
+    """
+    Comprehensive technical analysis for a stock: trend (SMA 20/50/200,
+    EMA 12/26), momentum (RSI-14, MACD), volatility (Bollinger Bands), and
+    volume. Returns numeric indicator values plus plain-English signals so
+    you know at a glance whether the setup is bullish, bearish, or neutral.
+
+    Args:
+        symbol: Stock ticker (e.g. "AAPL")
+        period: "3mo", "6mo", "1y", "2y"
+    """
+    hist = yf.Ticker(symbol).history(period=period)
+    if hist.empty:
+        return {"error": f"No price data for {symbol}"}
+
+    close = hist["Close"].rename("close")
+    high  = hist["High"].rename("high")
+    low   = hist["Low"].rename("low")
+    vol   = hist["Volume"].rename("volume")
+
+    df = pd.concat([close, high, low, vol], axis=1)
+
+    df["sma20"]  = ta.sma(df["close"], 20)
+    df["sma50"]  = ta.sma(df["close"], 50)
+    df["sma200"] = ta.sma(df["close"], 200)
+    df["ema12"]  = ta.ema(df["close"], 12)
+    df["ema26"]  = ta.ema(df["close"], 26)
+    df["rsi"]    = ta.rsi(df["close"], 14)
+    df["vol_sma20"] = ta.sma(df["volume"], 20)
+
+    macd_df = ta.macd(df["close"])
+    if macd_df is not None and not macd_df.empty:
+        df["macd"]        = macd_df.iloc[:, 0]
+        df["macd_signal"] = macd_df.iloc[:, 1]
+        df["macd_hist"]   = macd_df.iloc[:, 2]
+
+    bb_df = ta.bbands(df["close"], 20)
+    if bb_df is not None and not bb_df.empty:
+        df["bb_upper"] = bb_df.iloc[:, 0]
+        df["bb_mid"]   = bb_df.iloc[:, 1]
+        df["bb_lower"] = bb_df.iloc[:, 2]
+        df["bb_pct"]   = bb_df.iloc[:, 3]
+
+    last = df.iloc[-1]
+    price = float(last["close"])
+
+    def _f(col):
+        try:
+            v = float(last.get(col, float("nan")))
+            return None if np.isnan(v) else round(v, 4)
+        except:
+            return None
+
+    rsi     = _f("rsi")
+    sma50   = _f("sma50")
+    sma200  = _f("sma200")
+    macd_v  = _f("macd")
+    macd_s  = _f("macd_signal")
+    bb_pct  = _f("bb_pct")
+    vol_now = _f("volume")
+    vol_avg = _f("vol_sma20")
+
+    signals = []
+    if rsi:
+        if rsi < 30:   signals.append("RSI OVERSOLD (<30) — potential bounce candidate")
+        elif rsi > 70: signals.append("RSI OVERBOUGHT (>70) — extended, watch for pullback")
+        else:          signals.append(f"RSI neutral at {rsi}")
+    if sma50 and sma200:
+        if sma50 > sma200: signals.append("Golden cross active (SMA50 > SMA200) — long-term uptrend")
+        else:              signals.append("Death cross active (SMA50 < SMA200) — long-term downtrend")
+    if sma50:
+        if price > sma50: signals.append("Price above SMA50 — short-term bullish")
+        else:             signals.append("Price below SMA50 — short-term bearish")
+    if macd_v and macd_s:
+        if macd_v > macd_s: signals.append("MACD above signal line — bullish momentum")
+        else:               signals.append("MACD below signal line — bearish momentum")
+    if bb_pct is not None:
+        if bb_pct > 0.9:   signals.append("Near upper Bollinger Band — overbought / extended")
+        elif bb_pct < 0.1: signals.append("Near lower Bollinger Band — oversold / compressed")
+    if vol_now and vol_avg and vol_avg > 0:
+        ratio = vol_now / vol_avg
+        if ratio > 1.5:   signals.append(f"High volume spike ({ratio:.1f}x avg) — strong conviction")
+        elif ratio < 0.5: signals.append(f"Low volume ({ratio:.1f}x avg) — weak conviction")
+
+    bull = sum(1 for s in signals if any(w in s.lower() for w in ["bullish", "oversold", "golden", "above", "high volume"]))
+    bear = sum(1 for s in signals if any(w in s.lower() for w in ["bearish", "overbought", "death", "below", "low volume"]))
+
+    return {
+        "symbol": symbol.upper(),
+        "price": round(price, 2),
+        "bias": "bullish" if bull > bear else ("bearish" if bear > bull else "neutral"),
+        "bull_signals": bull,
+        "bear_signals": bear,
+        "signals": signals,
+        "indicators": {
+            "rsi_14":       rsi,
+            "macd":         macd_v,
+            "macd_signal":  macd_s,
+            "macd_hist":    _f("macd_hist"),
+            "sma_20":       _f("sma20"),
+            "sma_50":       sma50,
+            "sma_200":      sma200,
+            "ema_12":       _f("ema12"),
+            "ema_26":       _f("ema26"),
+            "bb_upper":     _f("bb_upper"),
+            "bb_mid":       _f("bb_mid"),
+            "bb_lower":     _f("bb_lower"),
+            "bb_percent":   bb_pct,
+            "volume":       vol_now,
+            "volume_sma20": vol_avg,
+        },
+    }
+
+
+@mcp.tool()
+def scan_watchlist(symbols: list, period: str = "3mo") -> list:
+    """
+    Run technical analysis across a list of stocks simultaneously and rank
+    them by bullish signal count. Quickly surfaces the best-looking setups
+    from a universe of stocks.
+
+    Args:
+        symbols: List of tickers to scan (e.g. ["AAPL", "TSLA", "NVDA", "AMD"])
+        period:  Lookback period — "3mo", "6mo", "1y"
+    """
+    results = []
+    for sym in symbols:
+        try:
+            analysis = get_technical_analysis(sym, period)
+            if "error" not in analysis:
+                results.append(analysis)
+        except:
+            pass
+    results.sort(key=lambda x: (x.get("bull_signals", 0) - x.get("bear_signals", 0)), reverse=True)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Options Intelligence
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def calculate_black_scholes(
+    stock_price: float,
+    strike_price: float,
+    days_to_expiration: int,
+    implied_volatility: float,
+    option_type: str = "call",
+    risk_free_rate: float = 0.05,
+) -> dict:
+    """
+    Calculate the theoretical fair value of an option using Black-Scholes
+    and compare it to the market price to identify mispricings.
+
+    Use get_option_market_data first to get the market price and IV, then
+    plug them in here to see if the option is cheap or expensive.
+
+    - Market price > theoretical → option is overpriced → good to SELL
+    - Market price < theoretical → option is underpriced → good to BUY
+
+    Args:
+        stock_price:        Current stock price
+        strike_price:       Option strike price
+        days_to_expiration: Calendar days until expiration
+        implied_volatility: IV as a decimal (e.g. 0.30 = 30% IV)
+        option_type:        "call" or "put"
+        risk_free_rate:     Annual risk-free rate (default 0.05 ≈ current T-bills)
+    """
+    S, K, r_rate, sigma = stock_price, strike_price, risk_free_rate, implied_volatility
+    T = days_to_expiration / 365.0
+
+    if T <= 0 or sigma <= 0:
+        return {"error": "days_to_expiration and implied_volatility must be positive"}
+
+    d1 = (np.log(S / K) + (r_rate + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    if option_type == "call":
+        price = S * norm.cdf(d1) - K * np.exp(-r_rate * T) * norm.cdf(d2)
+        delta = norm.cdf(d1)
+        cdf_d2 = norm.cdf(d2)
+    else:
+        price = K * np.exp(-r_rate * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        delta = norm.cdf(d1) - 1
+        cdf_d2 = norm.cdf(-d2)
+
+    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    theta = (-(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
+             - r_rate * K * np.exp(-r_rate * T) * cdf_d2) / 365
+    vega  = S * norm.pdf(d1) * np.sqrt(T) / 100
+
+    if option_type == "call":
+        moneyness = "ITM" if S > K * 1.02 else ("OTM" if S < K * 0.98 else "ATM")
+    else:
+        moneyness = "ITM" if S < K * 0.98 else ("OTM" if S > K * 1.02 else "ATM")
+
+    return {
+        "theoretical_price":    round(float(price), 4),
+        "cost_per_contract":    round(float(price) * 100, 2),
+        "moneyness":            moneyness,
+        "greeks": {
+            "delta": round(float(delta), 4),
+            "gamma": round(float(gamma), 6),
+            "theta": round(float(theta), 4),
+            "vega":  round(float(vega),  4),
+        },
+        "inputs": {
+            "stock_price":            S,
+            "strike_price":           K,
+            "days_to_expiration":     days_to_expiration,
+            "implied_volatility_pct": round(sigma * 100, 1),
+            "option_type":            option_type,
+            "risk_free_rate_pct":     round(r_rate * 100, 1),
+        },
+        "interpretation": (
+            "Compare theoretical_price to the market ask/bid midpoint. "
+            "If market > theoretical the option may be overpriced (lean toward selling). "
+            "If market < theoretical it may be underpriced (lean toward buying)."
+        ),
+    }
+
+
+@mcp.tool()
+def analyze_volatility(symbol: str, period: str = "1y") -> dict:
+    """
+    Compare implied volatility (IV) to historical/realized volatility (HV)
+    to decide whether options are cheap or expensive right now.
+
+    - IV much higher than HV → options are EXPENSIVE → good time to sell premium
+    - IV much lower than HV  → options are CHEAP    → good time to buy options
+
+    Also shows IV rank (where current IV sits vs its own 52-week range).
+
+    Args:
+        symbol: Stock ticker (e.g. "AAPL")
+        period: Lookback for historical vol — "6mo", "1y", "2y"
+    """
+    t = yf.Ticker(symbol)
+    hist = t.history(period=period)
+    info = t.info
+
+    if hist.empty:
+        return {"error": f"No data for {symbol}"}
+
+    log_ret = np.log(hist["Close"] / hist["Close"].shift(1)).dropna()
+    hv_20d  = float(log_ret.tail(14).std()  * np.sqrt(252))
+    hv_30d  = float(log_ret.tail(21).std()  * np.sqrt(252))
+    hv_60d  = float(log_ret.tail(42).std()  * np.sqrt(252))
+    hv_1y   = float(log_ret.std()           * np.sqrt(252))
+
+    iv_current = None
+    try:
+        exps = t.options
+        if exps:
+            chain  = t.option_chain(exps[0])
+            calls  = chain.calls
+            spot   = float(hist["Close"].iloc[-1])
+            atm    = calls.iloc[(calls["strike"] - spot).abs().argsort()[:5]]
+            iv_current = float(atm["impliedVolatility"].median())
+    except:
+        pass
+
+    result = {
+        "symbol": symbol.upper(),
+        "current_price": round(float(hist["Close"].iloc[-1]), 2),
+        "historical_volatility": {
+            "hv_20d_pct": round(hv_20d * 100, 1),
+            "hv_30d_pct": round(hv_30d * 100, 1),
+            "hv_60d_pct": round(hv_60d * 100, 1),
+            "hv_1y_pct":  round(hv_1y  * 100, 1),
+        },
+    }
+
+    if iv_current:
+        iv_pct = round(iv_current * 100, 1)
+        premium = round((iv_current - hv_30d) * 100, 1)
+        result["implied_volatility_pct"] = iv_pct
+        result["iv_vs_hv30_pct"] = premium
+        if premium > 5:
+            result["signal"] = "IV is elevated vs realized vol — options are EXPENSIVE → lean toward selling premium (covered calls, cash-secured puts)"
+        elif premium < -5:
+            result["signal"] = "IV is compressed vs realized vol — options are CHEAP → lean toward buying (calls, puts, debit spreads)"
+        else:
+            result["signal"] = "IV roughly in line with realized vol — fairly priced, no strong directional edge from vol alone"
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Optimization & Risk
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def optimize_portfolio(
+    symbols: list,
+    period: str = "1y",
+    objective: str = "max_sharpe",
+) -> dict:
+    """
+    Use Modern Portfolio Theory (Markowitz) to find the mathematically
+    optimal allocation across a set of stocks. Returns target weights,
+    expected annual return, volatility, and Sharpe ratio.
+
+    Objectives:
+    - "max_sharpe"     → maximize return per unit of risk (best risk-adjusted, default)
+    - "min_volatility" → lowest possible portfolio volatility
+    - "max_return"     → maximize expected return (more concentrated, higher risk)
+
+    NOTE: Based on historical returns — always treat as one input among many,
+    not a guaranteed outcome.
+
+    Args:
+        symbols:   Tickers to include (e.g. ["AAPL", "MSFT", "NVDA", "TSLA"])
+        period:    Historical window — "1y", "2y", "3y"
+        objective: "max_sharpe", "min_volatility", or "max_return"
+    """
+    from pypfopt import EfficientFrontier, risk_models, expected_returns, objective_functions
+
+    prices = yf.download(symbols, period=period, auto_adjust=True, progress=False)["Close"]
+    prices = prices.dropna(axis=1, how="all").dropna()
+
+    if prices.empty or prices.shape[1] < 2:
+        return {"error": "Need at least 2 symbols with overlapping price history"}
+
+    used = list(prices.columns)
+    mu = expected_returns.mean_historical_return(prices)
+    S  = risk_models.sample_cov(prices)
+
+    ef = EfficientFrontier(mu, S)
+    if objective == "min_volatility":
+        ef.min_volatility()
+    elif objective == "max_return":
+        ef.add_objective(objective_functions.L2_reg, gamma=0.1)
+        ef.max_quadratic_utility(risk_aversion=0.01)
+    else:
+        ef.max_sharpe()
+
+    weights = ef.clean_weights()
+    perf = ef.portfolio_performance(verbose=False)
+
+    return {
+        "objective": objective,
+        "symbols_used": used,
+        "weights": {k: round(v, 4) for k, v in weights.items() if v > 0.001},
+        "expected_annual_return_pct": round(perf[0] * 100, 1),
+        "annual_volatility_pct":      round(perf[1] * 100, 1),
+        "sharpe_ratio":               round(perf[2], 2),
+        "period_used": period,
+        "disclaimer": "Based on historical returns. Past performance does not guarantee future results. Review before rebalancing.",
+    }
+
+
+@mcp.tool()
+def get_portfolio_risk_metrics(period: str = "1y") -> dict:
+    """
+    Risk-adjusted performance metrics for your live Robinhood portfolio:
+    Sharpe ratio, Sortino ratio, max drawdown, beta vs S&P 500, annualized
+    return and volatility, and a correlation matrix between all holdings.
+
+    Sharpe > 1.0 is good. Sortino > 1.5 is good. Beta > 1 means more
+    volatile than the market.
+
+    Args:
+        period: Lookback — "3mo", "6mo", "1y", "2y"
+    """
+    _ensure_auth()
+    holdings = r.build_holdings()
+    if not holdings:
+        return {"error": "No holdings found in your portfolio"}
+
+    symbols = list(holdings.keys())
+    total_equity = sum(float(d.get("equity") or 0) for d in holdings.values())
+    if total_equity == 0:
+        return {"error": "All positions show zero equity"}
+
+    weights = {sym: float(holdings[sym].get("equity") or 0) / total_equity for sym in symbols}
+
+    prices = yf.download(symbols + ["^GSPC"], period=period, auto_adjust=True, progress=False)["Close"].dropna()
+    rets   = prices.pct_change().dropna()
+
+    port_ret = sum(rets[sym] * weights.get(sym, 0) for sym in symbols if sym in rets.columns)
+    spy_ret  = rets["^GSPC"] if "^GSPC" in rets.columns else None
+
+    rf_daily = 0.05 / 252
+    excess   = port_ret - rf_daily
+    sharpe   = float(excess.mean() / excess.std() * np.sqrt(252)) if excess.std() > 0 else None
+
+    downside = excess[excess < 0]
+    sortino  = float(excess.mean() / downside.std() * np.sqrt(252)) if len(downside) > 1 and downside.std() > 0 else None
+
+    cum     = (1 + port_ret).cumprod()
+    max_dd  = float((cum / cum.cummax() - 1).min())
+
+    beta = None
+    if spy_ret is not None and spy_ret.std() > 0:
+        cov  = np.cov(port_ret, spy_ret)[0][1]
+        beta = round(cov / float(spy_ret.var()), 2)
+
+    port_cols = [s for s in symbols if s in rets.columns]
+    corr = rets[port_cols].corr().round(2).to_dict()
+
+    return {
+        "period": period,
+        "sharpe_ratio":            round(sharpe, 2) if sharpe else None,
+        "sortino_ratio":           round(sortino, 2) if sortino else None,
+        "max_drawdown_pct":        round(max_dd * 100, 1),
+        "beta_vs_sp500":           beta,
+        "annualized_return_pct":   round(float(port_ret.mean() * 252 * 100), 1),
+        "annualized_volatility_pct": round(float(port_ret.std() * np.sqrt(252) * 100), 1),
+        "weights_used":            {k: round(v, 3) for k, v in weights.items()},
+        "correlation_matrix":      corr,
+    }
+
+
+@mcp.tool()
+def calculate_position_size(
+    portfolio_value: float,
+    win_rate: float,
+    avg_win_pct: float,
+    avg_loss_pct: float,
+    max_position_pct: float = 20.0,
+) -> dict:
+    """
+    Use the Kelly Criterion to calculate how much of your portfolio to risk
+    on a single trade. Prevents both over-betting (ruin) and under-betting
+    (wasted edge).
+
+    Most professionals use half-Kelly or quarter-Kelly to reduce variance.
+
+    Args:
+        portfolio_value:  Total portfolio $ value (e.g. 10000)
+        win_rate:         Historical win rate as a decimal (e.g. 0.55 = 55%)
+        avg_win_pct:      Average gain on winners as decimal (e.g. 0.15 = 15%)
+        avg_loss_pct:     Average loss on losers as a positive decimal (e.g. 0.07 = 7%)
+        max_position_pct: Hard cap per position — default 20%
+    """
+    if avg_loss_pct <= 0:
+        return {"error": "avg_loss_pct must be a positive number"}
+
+    b = avg_win_pct / avg_loss_pct
+    p, q = win_rate, 1 - win_rate
+    kelly = (b * p - q) / b
+    cap   = max_position_pct / 100
+
+    def _size(fraction):
+        f = max(0.0, min(fraction, cap))
+        return {
+            "fraction_pct":  round(f * 100, 1),
+            "dollar_amount": round(portfolio_value * f, 2),
+            "capped":        fraction > cap,
+        }
+
+    favorable = kelly > 0
+    return {
+        "reward_to_risk_ratio":      round(b, 2),
+        "expected_value_per_dollar": round(b * p - q, 4),
+        "kelly_sizes": {
+            "full_kelly":    _size(kelly),
+            "half_kelly":    _size(kelly / 2),
+            "quarter_kelly": _size(kelly / 4),
+        },
+        "recommendation": "half_kelly" if favorable else "skip — negative expected value",
+        "verdict": (
+            f"Positive EV trade (EV={round(b*p-q,3)}/$ risked). Reward:risk = {round(b,2)}:1."
+            if favorable else
+            f"Negative EV trade (EV={round(b*p-q,3)}/$ risked). Mathematically unfavorable — skip."
+        ),
     }
 
 
