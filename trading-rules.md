@@ -105,11 +105,33 @@ For each held position run the following checks:
 ## STEP 5 — NEW TRADE SCREENING
 
 ### Eligible assets
-**Large-cap or ETF (primary universe):**
-- Large-cap US stock or ETF listed on NYSE or NASDAQ
-- SPY, QQQ, VTI always eligible
 
-**Sub-$20 growth stocks (expanded universe):**
+**Tier 1 — Core safe anchors (always scan, relaxed criteria):**
+These are the foundation. Screen them every session regardless of market conditions.
+Always check price vs 200dMA, unusual options activity, and near-term catalyst before buying.
+
+| Symbol | Type | Why |
+|--------|------|-----|
+| SPY | ETF | S&P 500 benchmark — always eligible |
+| QQQ | ETF | Nasdaq-100 — always eligible |
+| VTI | ETF | Total US market — always eligible |
+| GQQQ | ETF | Verify ticker; if valid, add to rotation |
+| AAPL | Large-cap | Dividend + growth, world's largest company |
+| MSFT | Large-cap | Cloud + AI growth, strong dividend history |
+| JPM | Large-cap | Banking bellwether, solid dividend |
+| JNJ | Large-cap | Healthcare dividend aristocrat |
+| KO | Large-cap | Consumer staples dividend king |
+| PG | Large-cap | Consumer staples dividend aristocrat |
+| V | Large-cap | Payments growth + dividend |
+| XOM | Large-cap | Energy dividend + growth |
+
+For Tier 1 names: the 200dMA rule is a **caution flag**, not an automatic block — if a blue-chip is temporarily below its 200dMA but the thesis is intact and confidence is 8+/10, a small starter position is allowed with a tighter 5% stop.
+
+**Tier 2 — Large-cap or ETF (standard universe):**
+- Any large-cap US stock or ETF listed on NYSE or NASDAQ
+- All standard buy criteria apply
+
+**Tier 3 — Sub-$20 growth stocks (expanded universe):**
 - Share price between **$5.00 and $20.00** (floor raised — avoid illiquid cheap stocks)
 - Market cap above **$300M**
 - Listed on NYSE or NASDAQ only (no OTC, no pink sheets)
@@ -118,9 +140,10 @@ For each held position run the following checks:
 - **Liquidity is critical** — bid-ask spread must be tight (under $0.10 for sub-$10 stocks, under $0.20 for $10–$20 stocks); avoid stocks where the spread is a significant % of price
 
 ### Trade priority
-1. **Growth + dividend stocks** — primary focus; steady compounders with income
-2. **Growth-only stocks** — allowed with strong thesis and improving momentum
-3. **Biotech (swing trade only)** — see biotech rules below; short-term holds only, no overnight thesis changes
+1. **Tier 1 core anchors** — SPY, QQQ, VTI, GQQQ, AAPL, MSFT, JPM, JNJ, KO, PG, V, XOM — **always check these first**
+2. **Growth + dividend stocks** — steady compounders with income
+3. **Growth-only stocks** — allowed with strong thesis and improving momentum
+4. **Biotech (swing trade only)** — see biotech rules below; short-term holds only, no overnight thesis changes
 
 ### Buy criteria — ALL must be true
 - [ ] NYSE or NASDAQ listed
