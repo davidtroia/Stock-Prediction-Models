@@ -410,6 +410,37 @@ def reinit():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/reinit-with-data', methods = ['POST'])
+def reinit_with_data():
+    """Seed the agent with raw historical data provided by the caller.
+
+    Expects JSON body: {"ticker": "TSLA", "closes": [...], "volumes": [...]}
+    Minimum window_size (20) bars required.
+    Use this when yfinance is unavailable and data comes from another source
+    (e.g. Robinhood MCP historical prices).
+    """
+    global agent, minmax, initial_money, TICKER
+    body = request.get_json(force=True)
+    ticker = body.get('ticker', TICKER).upper()
+    closes = body.get('closes', [])
+    volumes = body.get('volumes', [])
+    if len(closes) < window_size or len(volumes) < window_size:
+        return jsonify({'status': 'error',
+                        'message': f'Need at least {window_size} bars, got {len(closes)}'}), 400
+    if len(closes) != len(volumes):
+        return jsonify({'status': 'error',
+                        'message': 'closes and volumes must be the same length'}), 400
+    try:
+        agent, minmax, initial_money = _build_agent(closes, volumes)
+        TICKER = ticker
+        return jsonify({'status': 'ok', 'ticker': TICKER,
+                        'bars': len(closes),
+                        'price_range': [round(min(closes), 2), round(max(closes), 2)],
+                        'capital': round(initial_money, 2)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 def _require_agent():
     if agent is None:
         from flask import abort

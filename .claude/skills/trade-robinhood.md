@@ -50,6 +50,21 @@ TICKER=<ticker_from_config> nohup python3 app.py > agent.log 2>&1 &
 sleep 8
 ```
 
+Check if the agent initialized:
+```bash
+curl -s http://localhost:8005/status
+```
+
+If `initialized` is `false` (yfinance blocked), seed it using Robinhood historical data:
+- Use the `robinhood-trading` MCP to fetch at least 30 days of daily closing prices and volumes for the ticker
+- Then POST that data to the Flask agent:
+```bash
+curl -s -X POST http://localhost:8005/reinit-with-data \
+  -H "Content-Type: application/json" \
+  -d '{"ticker":"TSLA","closes":[<comma_separated_close_prices>],"volumes":[<comma_separated_volumes>]}'
+```
+Confirm the response shows `"status":"ok"` before proceeding.
+
 Now send the quote to the agent — replace CLOSE and VOLUME with real values:
 ```bash
 curl -s "http://localhost:8005/trade?data=[CLOSE,VOLUME]"
