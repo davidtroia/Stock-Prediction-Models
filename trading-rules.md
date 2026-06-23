@@ -115,6 +115,7 @@ Always check price vs 200dMA, unusual options activity, and near-term catalyst b
 | SPY | ETF | S&P 500 benchmark — always eligible |
 | QQQ | ETF | Nasdaq-100 — always eligible |
 | VTI | ETF | Total US market — always eligible |
+| IWM | ETF | Russell 2000 small-cap benchmark — always eligible |
 | AAPL | Large-cap | Dividend + growth, world's largest company |
 | MSFT | Large-cap | Cloud + AI growth, strong dividend history |
 | JPM | Large-cap | Banking bellwether, solid dividend |
@@ -139,7 +140,7 @@ For Tier 1 names: the 200dMA rule is a **caution flag**, not an automatic block 
 - **Liquidity is critical** — bid-ask spread must be tight (under $0.10 for sub-$10 stocks, under $0.20 for $10–$20 stocks); avoid stocks where the spread is a significant % of price
 
 ### Trade priority
-1. **Tier 1 core anchors** — SPY, QQQ, VTI, AAPL, MSFT, JPM, JNJ, KO, PG, V, XOM — **always check these first**
+1. **Tier 1 core anchors** — SPY, QQQ, VTI, IWM, AAPL, MSFT, JPM, JNJ, KO, PG, V, XOM — **always check these first**
 2. **Growth + dividend stocks** — steady compounders with income
 3. **Growth-only stocks** — allowed with strong thesis and improving momentum
 4. **Biotech (swing trade only)** — see biotech rules below; short-term holds only, no overnight thesis changes
