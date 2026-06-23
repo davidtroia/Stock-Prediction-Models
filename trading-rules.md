@@ -3,6 +3,36 @@
 
 ---
 
+## STEP 0 — OVERNIGHT & PRE-MARKET MONITOR
+Run before the regular session opens (ideally 7–9 AM CT). Check:
+
+### Index futures
+Search for overnight levels of:
+- **ES (S&P 500 futures)** — direction and % change from prior settle
+- **NQ (NASDAQ 100 futures)** — tech sentiment
+- **YM (Dow futures)** — broad market tone
+- **RTY (Russell 2000 futures)** — small-cap / risk-on signal
+
+Flag if any index future is down more than **1%** overnight — note the likely cause (macro news, geopolitical event, earnings shock).
+
+### Pre-market equity prices
+- Call `get_equity_quotes` for SPY, QQQ, VTI and all held positions
+- Use `last_non_reg_trade_price` for the pre-market price
+- Calculate pre-market % change vs prior close
+- Flag any held position moving more than **±2% pre-market** — investigate news before open
+
+### Overnight macro events to check
+- Fed speeches or rate decisions
+- Major economic data releases (CPI, NFP, PCE, GDP)
+- Geopolitical events (tariffs, sanctions, conflicts)
+- Major international market moves (Nikkei, DAX, FTSE, Shanghai)
+- Oil / commodities moves that affect sector holdings
+
+### Pre-market tone summary
+Classify the open as: **Risk-On** / **Risk-Off** / **Mixed** based on futures + VIX direction, and note which sectors are likely to lead or lag.
+
+---
+
 ## STEP 1 — ACCOUNT STATUS
 Call `get_accounts` and `get_portfolio`. Note cash, total equity, and all open positions.
 
@@ -10,7 +40,7 @@ Call `get_accounts` and `get_portfolio`. Note cash, total equity, and all open p
 
 ## STEP 2 — MARKET OVERVIEW
 Call `get_index_quotes` for SPX, NDX, VIX. Call `get_equity_quotes` for SPY, QQQ, VTI.
-Note daily change, VIX level, and sector rotation themes.
+Note daily change, VIX level, and sector rotation themes. Cross-reference with overnight futures direction from STEP 0.
 
 ---
 
