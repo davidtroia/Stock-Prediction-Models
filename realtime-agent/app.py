@@ -2,9 +2,11 @@ from flask import Flask, request, jsonify
 import numpy as np
 import pickle
 import json
+import os
 from sklearn.preprocessing import MinMaxScaler
 import pandas as pd
 from datetime import datetime
+import yfinance as yf
 
 app = Flask(__name__)
 
@@ -339,51 +341,139 @@ class Agent:
         return states_buy, states_sell, total_gains, invest
 
 
+TICKER = os.environ.get('TICKER', 'TSLA')
+
 with open('model.pkl', 'rb') as fopen:
     model = pickle.load(fopen)
 
-df = pd.read_csv('TWTR.csv')
-real_trend = df['Close'].tolist()
-parameters = [df['Close'].tolist(), df['Volume'].tolist()]
-minmax = MinMaxScaler(feature_range = (100, 200)).fit(np.array(parameters).T)
-scaled_parameters = minmax.transform(np.array(parameters).T).T.tolist()
-initial_money = np.max(parameters[0]) * 2
+def _init_from_ticker(ticker):
+    print(f'Fetching {ticker} historical data via yfinance...')
+    df = yf.download(ticker, period='6mo', interval='1d', progress=False, auto_adjust=True)
+    df = df.dropna()
+    if df.empty or len(df) < window_size:
+        raise ValueError(f'Not enough data for {ticker}')
+    return df['Close'].tolist(), df['Volume'].tolist()
 
-agent = Agent(model = model,
-              timeseries = scaled_parameters,
-              skip = skip,
-              initial_money = initial_money,
-              real_trend = real_trend,
-              minmax = minmax)
+def _build_agent(closes, volumes):
+    params = [closes, volumes]
+    mx = MinMaxScaler(feature_range=(100, 200)).fit(np.array(params).T)
+    scaled = mx.transform(np.array(params).T).T.tolist()
+    money = np.max(closes) * 2
+    return Agent(model=model, timeseries=scaled, skip=skip,
+                 initial_money=money, real_trend=closes, minmax=mx), mx, money
+
+try:
+    closes, volumes = _init_from_ticker(TICKER)
+    agent, minmax, initial_money = _build_agent(closes, volumes)
+    print(f'Initialized {TICKER}: {len(closes)} bars, '
+          f'${min(closes):.2f}-${max(closes):.2f}, capital=${initial_money:.2f}')
+except Exception as e:
+    print(f'WARNING: Could not fetch {TICKER} data ({e}). Agent not initialized.')
+    print('Call POST /reinit?ticker=TSLA to initialize before trading.')
+    agent = None
+    minmax = None
+    initial_money = 0
 
 @app.route('/', methods = ['GET'])
 def hello():
-    return jsonify({'status': 'OK'})
+    return jsonify({'status': 'OK', 'ticker': TICKER,
+                    'initialized': agent is not None})
 
+
+@app.route('/status', methods = ['GET'])
+def status():
+    if agent is None:
+        return jsonify({'initialized': False, 'ticker': TICKER})
+    return jsonify({
+        'initialized': True,
+        'ticker': TICKER,
+        'balance': agent._capital,
+        'inventory_size': len(agent._inventory),
+        'queue_size': len(agent._queue),
+        'window_size': window_size,
+    })
+
+
+@app.route('/reinit', methods = ['POST'])
+def reinit():
+    global agent, minmax, initial_money, TICKER
+    ticker = request.args.get('ticker', TICKER).upper()
+    try:
+        closes, volumes = _init_from_ticker(ticker)
+        agent, minmax, initial_money = _build_agent(closes, volumes)
+        TICKER = ticker
+        return jsonify({'status': 'ok', 'ticker': TICKER,
+                        'bars': len(closes),
+                        'price_range': [round(min(closes), 2), round(max(closes), 2)],
+                        'capital': round(initial_money, 2)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/reinit-with-data', methods = ['POST'])
+def reinit_with_data():
+    """Seed the agent with raw historical data provided by the caller.
+
+    Expects JSON body: {"ticker": "TSLA", "closes": [...], "volumes": [...]}
+    Minimum window_size (20) bars required.
+    Use this when yfinance is unavailable and data comes from another source
+    (e.g. Robinhood MCP historical prices).
+    """
+    global agent, minmax, initial_money, TICKER
+    body = request.get_json(force=True)
+    ticker = body.get('ticker', TICKER).upper()
+    closes = body.get('closes', [])
+    volumes = body.get('volumes', [])
+    if len(closes) < window_size or len(volumes) < window_size:
+        return jsonify({'status': 'error',
+                        'message': f'Need at least {window_size} bars, got {len(closes)}'}), 400
+    if len(closes) != len(volumes):
+        return jsonify({'status': 'error',
+                        'message': 'closes and volumes must be the same length'}), 400
+    try:
+        agent, minmax, initial_money = _build_agent(closes, volumes)
+        TICKER = ticker
+        return jsonify({'status': 'ok', 'ticker': TICKER,
+                        'bars': len(closes),
+                        'price_range': [round(min(closes), 2), round(max(closes), 2)],
+                        'capital': round(initial_money, 2)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+def _require_agent():
+    if agent is None:
+        from flask import abort
+        abort(503, description='Agent not initialized. POST /reinit?ticker=TSLA first.')
 
 @app.route('/inventory', methods = ['GET'])
 def inventory():
+    _require_agent()
     return jsonify(agent._inventory)
 
 
 @app.route('/queue', methods = ['GET'])
 def queue():
+    _require_agent()
     return jsonify(agent._queue)
 
 
 @app.route('/balance', methods = ['GET'])
 def balance():
+    _require_agent()
     return jsonify(agent._capital)
 
 
 @app.route('/trade', methods = ['GET'])
 def trade():
+    _require_agent()
     data = json.loads(request.args.get('data'))
     return jsonify(agent.trade(data))
 
 
 @app.route('/reset', methods = ['GET'])
 def reset():
+    _require_agent()
     money = json.loads(request.args.get('money'))
     agent.reset_capital(money)
     return jsonify(True)
