@@ -792,6 +792,91 @@ def place_stop_limit_order(
 
 
 @mcp.tool()
+def place_trailing_stop_order(
+    symbol: str,
+    quantity: float,
+    trail_amount: float,
+    side: str = "sell",
+    trail_type: str = "percentage",
+) -> dict:
+    """
+    Place a trailing stop order. The stop price follows the market by
+    trail_amount and only moves in your favor, locking in gains (sell) or
+    chasing a pullback (buy). Guardrails are checked automatically.
+
+    Args:
+        symbol:       Stock ticker symbol (e.g. "AAPL")
+        quantity:     Number of shares
+        trail_amount: Size of the trail. If trail_type is "percentage" this is
+                      a percent (e.g. 5 = 5%); if "amount" it is dollars per
+                      share (e.g. 2.50).
+        side:         "sell" (trail below to protect a long) or "buy"
+                      (trail above to enter on a pullback). Default "sell".
+        trail_type:   "percentage" or "amount". Default "percentage".
+    """
+    _ensure_auth()
+    side = side.lower()
+    if side not in ("buy", "sell"):
+        return {"error": "side must be 'buy' or 'sell'"}
+    if trail_type not in ("percentage", "amount"):
+        return {"error": "trail_type must be 'percentage' or 'amount'"}
+
+    price_list = r.get_latest_price(symbol)
+    price = float(price_list[0]) if price_list and price_list[0] else 0
+    guard = _check_guardrails(symbol, price * quantity, side)
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+
+    if side == "sell":
+        order = r.order_sell_trailing_stop(
+            symbol, quantity, trail_amount, trailType=trail_type, timeInForce="gtc"
+        )
+    else:
+        order = r.order_buy_trailing_stop(
+            symbol, quantity, trail_amount, trailType=trail_type, timeInForce="gtc"
+        )
+    return _format_order(order)
+
+
+@mcp.tool()
+def place_buy_order_by_dollars(symbol: str, amount_in_dollars: float) -> dict:
+    """
+    Buy a stock by dollar amount instead of share count (fractional shares).
+    Useful for sizing a position to a target dollar value without computing
+    the quantity yourself. Guardrails are checked automatically.
+
+    Args:
+        symbol:            Stock ticker symbol (e.g. "AAPL")
+        amount_in_dollars: Dollar amount to invest
+    """
+    _ensure_auth()
+    guard = _check_guardrails(symbol, amount_in_dollars, "buy")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    order = r.order_buy_fractional_by_price(symbol, amount_in_dollars, timeInForce="gfd")
+    return _format_order(order)
+
+
+@mcp.tool()
+def place_sell_order_by_dollars(symbol: str, amount_in_dollars: float) -> dict:
+    """
+    Sell a stock by dollar amount instead of share count (fractional shares).
+    Trims a position down by a target dollar value without computing the
+    quantity yourself. Guardrails are checked automatically.
+
+    Args:
+        symbol:            Stock ticker symbol (e.g. "AAPL")
+        amount_in_dollars: Dollar amount to sell
+    """
+    _ensure_auth()
+    guard = _check_guardrails(symbol, amount_in_dollars, "sell")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    order = r.order_sell_fractional_by_price(symbol, amount_in_dollars, timeInForce="gfd")
+    return _format_order(order)
+
+
+@mcp.tool()
 def get_open_orders() -> list:
     """
     List all currently open (unfilled/pending) orders on the account.

@@ -90,6 +90,9 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 | `place_limit_sell_order` | Limit sell |
 | `place_stop_loss_order` | Stop-loss sell (triggers market order when price drops to stop) |
 | `place_stop_limit_order` | Stop-limit buy or sell |
+| `place_trailing_stop_order` | Trailing stop (buy or sell) — stop follows the market to lock in gains or chase a pullback, by percent or dollar trail |
+| `place_buy_order_by_dollars` | Buy a fractional position sized by dollar amount instead of share count |
+| `place_sell_order_by_dollars` | Sell a fractional position sized by dollar amount instead of share count |
 | `get_open_orders` | All pending/unfilled orders |
 | `get_order_history` | Recent order history |
 | `cancel_order` | Cancel a specific order by ID |
