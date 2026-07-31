@@ -1392,6 +1392,9 @@ def place_crypto_market_buy(symbol: str, amount_in_dollars: float) -> dict:
         amount_in_dollars: Dollar amount to spend
     """
     _ensure_auth()
+    guard = _check_guardrails(symbol, amount_in_dollars, "buy")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_buy_crypto_by_price(symbol, amount_in_dollars, timeInForce="gtc")
     return _format_crypto_order(order)
 
@@ -1406,6 +1409,11 @@ def place_crypto_market_sell(symbol: str, quantity: float) -> dict:
         quantity: Amount of crypto to sell
     """
     _ensure_auth()
+    quote = r.get_crypto_quote(symbol, info=None) or {}
+    price = float(quote.get("mark_price") or quote.get("bid_price") or 0)
+    guard = _check_guardrails(symbol, price * quantity, "sell")
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
     order = r.order_sell_crypto_by_quantity(symbol, quantity, timeInForce="gtc")
     return _format_crypto_order(order)
 
