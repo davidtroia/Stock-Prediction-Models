@@ -1,0 +1,11 @@
+{
+  "ticker": "TSLA",
+  "shares_per_trade": 1,
+  "check_interval_minutes": 60,
+  "trade_only_market_hours": true,
+  "market_open": "09:30",
+  "market_close": "16:00",
+  "market_timezone": "America/New_York",
+  "flask_url": "http://localhost:8005",
+  "log_file": "trade_log.jsonl"
+}
