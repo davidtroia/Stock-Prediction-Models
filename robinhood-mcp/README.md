@@ -59,6 +59,29 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 }
 ```
 
+## Safety Guardrails
+
+Every stock and crypto order routes through a guardrail check before it is sent
+to Robinhood. Limits are configured via environment variables (see
+`.env.example`): blocked/allowed symbol lists, max single-trade size, minimum
+cash reserve, max position concentration, and a daily-loss halt. If a hard
+limit is violated the order is not placed and the tool returns
+`{"blocked": True, "reasons": [...]}`.
+
+**Large-trade confirmation.** Orders whose dollar value exceeds
+`REQUIRE_CONFIRMATION_ABOVE` (default `$500`) are not placed on the first call —
+the order tool returns `{"confirmation_required": True, ...}` describing the
+trade. Re-call the same tool with `confirm=True` to place it. Orders at or
+below the threshold place normally. Hard blocks always take precedence over the
+confirmation prompt.
+
+| Tool | Description |
+|---|---|
+| `get_trading_limits` | Show all active guardrail values currently configured |
+| `check_trade` | Dry-run a proposed trade against the guardrails (incl. the confirmation gate) without placing it |
+
+> **Note:** Options order tools do not yet route through these guardrails.
+
 ## Available Tools
 
 ### Account & Portfolio
