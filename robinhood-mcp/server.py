@@ -1199,11 +1199,14 @@ def buy_option_to_open(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Buy to open an option contract (enter a new long position).
 
     Cost = limit_price × quantity × 100 (each contract covers 100 shares).
+    Guardrails are checked against the underlying symbol using that cost as the
+    trade value.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1213,8 +1216,14 @@ def buy_option_to_open(
         quantity:        Number of contracts to buy
         limit_price:     Maximum premium per share to pay (e.g. 1.50 = $150/contract)
         time_in_force:   "gfd" (good for day) or "gtc" (good till cancelled)
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_option_limit(
         positionEffect="open",
         creditOrDebit="debit",
@@ -1238,9 +1247,13 @@ def sell_option_to_close(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Sell to close an existing long option position.
+
+    Guardrails are checked against the underlying symbol using
+    limit_price × quantity × 100 as the trade value.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1250,8 +1263,14 @@ def sell_option_to_close(
         quantity:        Number of contracts to sell
         limit_price:     Minimum premium per share to accept
         time_in_force:   "gfd" or "gtc"
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_option_limit(
         positionEffect="close",
         creditOrDebit="credit",
@@ -1275,10 +1294,16 @@ def sell_option_to_open(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Sell to open (write) an option contract, entering a short position and
     collecting premium upfront. Requires margin approval for uncovered positions.
+
+    Guardrails are checked against the underlying symbol using the premium
+    collected (limit_price × quantity × 100) as the trade value. Note that for
+    an uncovered short the true risk can far exceed the premium collected; the
+    guardrail sizes on the premium only.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1288,8 +1313,14 @@ def sell_option_to_open(
         quantity:        Number of contracts to write
         limit_price:     Minimum premium per share to collect
         time_in_force:   "gfd" or "gtc"
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # premium collected; each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_option_limit(
         positionEffect="open",
         creditOrDebit="credit",
@@ -1313,9 +1344,13 @@ def buy_option_to_close(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Buy to close a short option position (covers a previously written contract).
+
+    Guardrails are checked against the underlying symbol using
+    limit_price × quantity × 100 as the trade value.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1325,8 +1360,14 @@ def buy_option_to_close(
         quantity:        Number of contracts to buy back
         limit_price:     Maximum premium per share to pay
         time_in_force:   "gfd" or "gtc"
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_option_limit(
         positionEffect="close",
         creditOrDebit="debit",
