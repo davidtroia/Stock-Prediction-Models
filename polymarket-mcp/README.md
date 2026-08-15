@@ -163,6 +163,25 @@ python test_guardrails.py     # or: pytest test_guardrails.py
 18 passed, 0 failed, 18 total
 ```
 
+### Live API diagnostic
+
+`check_api_shapes.py` verifies connectivity and confirms the response field names
+this server depends on. Run it once against real credentials before trusting the
+exposure guardrails:
+
+```bash
+set -a && source .env && set +a
+python check_api_shapes.py            # values redacted, shapes only
+python check_api_shapes.py --show-values
+```
+
+It checks a public endpoint first, then auth, then reports whether the balance and
+position field mappings resolve. This matters because a wrong mapping does not
+crash — it reads cash and exposure as `$0`, which would make
+`MAX_MARKET_EXPOSURE_USD`, `MAX_TOTAL_EXPOSURE_USD`, `MIN_CASH_RESERVE_USD` and
+`MAX_OPEN_POSITIONS` silently pass everything. The purely local guards
+(`MAX_SINGLE_ORDER_USD`, `MIN_PRICE`/`MAX_PRICE`, block lists) are unaffected.
+
 ## Notes
 
 - `mcp` is pinned to `<2.0.0` — `FastMCP` was removed in 2.0 in favor of `MCPServer`.
