@@ -1,0 +1,53 @@
+# Stock alert configuration.
+# Copy to config.yaml and edit. Secrets are best set as environment variables
+# (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID) rather than committed here.
+
+settings:
+  channel: telegram          # telegram | console
+  # telegram_bot_token: ""   # prefer the TELEGRAM_BOT_TOKEN env var
+  # telegram_chat_id: ""     # prefer the TELEGRAM_CHAT_ID env var
+  cooldown_minutes: 60       # don't resend the same alert within this window
+  history_period: 1y         # how much history to pull for indicators
+  market_hours_only: false   # true = only evaluate on weekdays 09:30-16:00 ET
+  state_file: state.json     # dedupe/cooldown store (gitignored)
+
+# Each watch entry is one symbol and the rules to evaluate against it.
+# Every rule fires an "approaching" alert when the stock is *about to* meet the
+# criterion (within a proximity band) and a "met" alert when it triggers.
+watch:
+  - symbol: AAPL
+    rules:
+      - type: price_above
+        target: 250
+        proximity_pct: 1        # warn when within 1% of $250
+      - type: price_below
+        target: 190
+      - type: rsi
+        period: 14
+        oversold: 30            # alert near/at RSI 30
+        overbought: 70
+      - type: near_52w_high
+        proximity_pct: 2
+
+  - symbol: TSLA
+    rules:
+      - type: pct_move
+        threshold: 5            # a >=5% day move...
+        direction: both         # up | down | both
+      - type: macd_cross
+        direction: bullish      # bullish | bearish | both
+      - type: bollinger
+        band: lower             # lower | upper
+        period: 20
+        num_std: 2
+
+  - symbol: NVDA
+    rules:
+      - type: ma_cross
+        fast: 50
+        slow: 200               # golden/death cross
+        direction: both
+      - type: volume_spike
+        multiple: 2             # volume >= 2x its 30-day average
+      - type: near_52w_low
+        proximity_pct: 3

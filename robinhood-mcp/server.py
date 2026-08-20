@@ -80,10 +80,18 @@ def _load_guardrails() -> dict:
     }
 
 
-def _check_guardrails(symbol: str, trade_value_usd: float, side: str = "buy") -> dict:
+def _check_guardrails(symbol: str, trade_value_usd: float, side: str = "buy", confirm: bool = False) -> dict:
     """
     Validate a proposed trade against all active guardrails.
-    Returns {"ok": True} if safe, or {"ok": False, "blocked_by": [...reasons...]} if not.
+
+    Returns one of:
+      - {"ok": True} if the trade is safe to place.
+      - {"ok": False, "blocked_by": [...reasons...]} if a hard limit is violated.
+      - {"ok": False, "needs_confirmation": True, "message": ...} if the trade
+        clears every hard limit but its value exceeds REQUIRE_CONFIRMATION_ABOVE
+        and confirm is not True. Hard blocks always take precedence over a
+        confirmation prompt.
+
     Called internally before every order function.
     """
     _ensure_auth()
@@ -146,7 +154,39 @@ def _check_guardrails(symbol: str, trade_value_usd: float, side: str = "buy") ->
 
     if blocks:
         return {"ok": False, "blocked_by": blocks}
+
+    # Confirmation gate — only reached when no hard limit is violated.
+    if trade_value_usd > limits["require_confirmation_above"] and not confirm:
+        return {
+            "ok": False,
+            "needs_confirmation": True,
+            "message": (
+                f"Trade value ${trade_value_usd:.2f} exceeds "
+                f"REQUIRE_CONFIRMATION_ABOVE (${limits['require_confirmation_above']:.0f}). "
+                f"Re-submit the same order with confirm=True to proceed."
+            ),
+        }
+
     return {"ok": True}
+
+
+def _guard_response(symbol: str, trade_value_usd: float, side: str, confirm: bool):
+    """
+    Run guardrails for an order tool. Returns a response dict to return to the
+    caller immediately (a hard block or a confirmation prompt), or None when the
+    trade is cleared to proceed.
+    """
+    guard = _check_guardrails(symbol, trade_value_usd, side, confirm=confirm)
+    if guard.get("needs_confirmation"):
+        return {
+            "confirmation_required": True,
+            "message": guard["message"],
+            "trade_value_usd": round(trade_value_usd, 2),
+            "order": None,
+        }
+    if not guard["ok"]:
+        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    return None
 
 
 @mcp.tool()
@@ -161,7 +201,7 @@ def get_trading_limits() -> dict:
 
 
 @mcp.tool()
-def check_trade(symbol: str, trade_value_usd: float, side: str = "buy") -> dict:
+def check_trade(symbol: str, trade_value_usd: float, side: str = "buy", confirm: bool = False) -> dict:
     """
     Dry-check whether a proposed trade would pass all guardrails without
     actually placing it. Use this to validate any trade before executing.
@@ -170,8 +210,11 @@ def check_trade(symbol: str, trade_value_usd: float, side: str = "buy") -> dict:
         symbol:          Stock ticker (e.g. "AAPL")
         trade_value_usd: Dollar value of the proposed trade
         side:            "buy" or "sell"
+        confirm:         Set True to preview whether the trade clears the
+                         REQUIRE_CONFIRMATION_ABOVE gate (mirrors the confirm
+                         flag on the order tools).
     """
-    result = _check_guardrails(symbol, trade_value_usd, side)
+    result = _check_guardrails(symbol, trade_value_usd, side, confirm=confirm)
     result["symbol"] = symbol.upper()
     result["trade_value_usd"] = trade_value_usd
     result["side"] = side
@@ -666,7 +709,7 @@ def get_earnings(symbol: str) -> list:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def place_market_buy_order(symbol: str, quantity: float) -> dict:
+def place_market_buy_order(symbol: str, quantity: float, confirm: bool = False) -> dict:
     """
     Place a market buy order for a stock. Guardrails are checked automatically
     before the order is submitted.
@@ -674,20 +717,22 @@ def place_market_buy_order(symbol: str, quantity: float) -> dict:
     Args:
         symbol:   Stock ticker symbol (e.g. "AAPL")
         quantity: Number of shares to buy (fractional shares supported)
+        confirm:  Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                  re-submitted with confirm=True.
     """
     _ensure_auth()
     price_list = r.get_latest_price(symbol)
     price = float(price_list[0]) if price_list and price_list[0] else 0
     trade_value = price * quantity
-    guard = _check_guardrails(symbol, trade_value, "buy")
-    if not guard["ok"]:
-        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    resp = _guard_response(symbol, trade_value, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_market(symbol, quantity, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
 
 @mcp.tool()
-def place_limit_buy_order(symbol: str, quantity: float, limit_price: float) -> dict:
+def place_limit_buy_order(symbol: str, quantity: float, limit_price: float, confirm: bool = False) -> dict:
     """
     Place a limit buy order for a stock. Guardrails are checked automatically.
 
@@ -695,37 +740,41 @@ def place_limit_buy_order(symbol: str, quantity: float, limit_price: float) -> d
         symbol:      Stock ticker symbol (e.g. "AAPL")
         quantity:    Number of shares to buy
         limit_price: Maximum price per share to pay
+        confirm:     Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                     re-submitted with confirm=True.
     """
     _ensure_auth()
     trade_value = limit_price * quantity
-    guard = _check_guardrails(symbol, trade_value, "buy")
-    if not guard["ok"]:
-        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    resp = _guard_response(symbol, trade_value, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_limit(symbol, quantity, limit_price, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
 
 @mcp.tool()
-def place_market_sell_order(symbol: str, quantity: float) -> dict:
+def place_market_sell_order(symbol: str, quantity: float, confirm: bool = False) -> dict:
     """
     Place a market sell order for a stock. Guardrails are checked automatically.
 
     Args:
         symbol:   Stock ticker symbol (e.g. "AAPL")
         quantity: Number of shares to sell
+        confirm:  Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                  re-submitted with confirm=True.
     """
     _ensure_auth()
     price_list = r.get_latest_price(symbol)
     price = float(price_list[0]) if price_list and price_list[0] else 0
-    guard = _check_guardrails(symbol, price * quantity, "sell")
-    if not guard["ok"]:
-        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    resp = _guard_response(symbol, price * quantity, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_market(symbol, quantity, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
 
 @mcp.tool()
-def place_limit_sell_order(symbol: str, quantity: float, limit_price: float) -> dict:
+def place_limit_sell_order(symbol: str, quantity: float, limit_price: float, confirm: bool = False) -> dict:
     """
     Place a limit sell order for a stock. Guardrails are checked automatically.
 
@@ -733,17 +782,19 @@ def place_limit_sell_order(symbol: str, quantity: float, limit_price: float) -> 
         symbol:      Stock ticker symbol (e.g. "AAPL")
         quantity:    Number of shares to sell
         limit_price: Minimum price per share to accept
+        confirm:     Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                     re-submitted with confirm=True.
     """
     _ensure_auth()
-    guard = _check_guardrails(symbol, limit_price * quantity, "sell")
-    if not guard["ok"]:
-        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    resp = _guard_response(symbol, limit_price * quantity, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_limit(symbol, quantity, limit_price, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
 
 @mcp.tool()
-def place_stop_loss_order(symbol: str, quantity: float, stop_price: float) -> dict:
+def place_stop_loss_order(symbol: str, quantity: float, stop_price: float, confirm: bool = False) -> dict:
     """
     Place a stop-loss sell order. Triggers a market sell when price drops to
     stop_price. Guardrails are checked automatically.
@@ -752,11 +803,13 @@ def place_stop_loss_order(symbol: str, quantity: float, stop_price: float) -> di
         symbol:     Stock ticker symbol (e.g. "AAPL")
         quantity:   Number of shares to sell
         stop_price: Price at which the stop order is triggered
+        confirm:    Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                    re-submitted with confirm=True.
     """
     _ensure_auth()
-    guard = _check_guardrails(symbol, stop_price * quantity, "sell")
-    if not guard["ok"]:
-        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    resp = _guard_response(symbol, stop_price * quantity, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_stop_loss(symbol, quantity, stop_price, timeInForce="gtc", extendedHours=False)
     return _format_order(order)
 
@@ -768,6 +821,7 @@ def place_stop_limit_order(
     stop_price: float,
     limit_price: float,
     side: str = "sell",
+    confirm: bool = False,
 ) -> dict:
     """
     Place a stop-limit order. When stop_price is triggered, a limit order
@@ -779,15 +833,109 @@ def place_stop_limit_order(
         stop_price:  Price that triggers the order
         limit_price: Limit price for the resulting limit order
         side:        "buy" or "sell"
+        confirm:     Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                     re-submitted with confirm=True.
     """
     _ensure_auth()
-    guard = _check_guardrails(symbol, limit_price * quantity, side)
-    if not guard["ok"]:
-        return {"blocked": True, "reasons": guard["blocked_by"], "order": None}
+    resp = _guard_response(symbol, limit_price * quantity, side, confirm)
+    if resp is not None:
+        return resp
     if side == "sell":
         order = r.order_sell_stop_limit(symbol, quantity, limit_price, stop_price, timeInForce="gtc")
     else:
         order = r.order_buy_stop_limit(symbol, quantity, limit_price, stop_price, timeInForce="gtc")
+    return _format_order(order)
+
+
+@mcp.tool()
+def place_trailing_stop_order(
+    symbol: str,
+    quantity: float,
+    trail_amount: float,
+    side: str = "sell",
+    trail_type: str = "percentage",
+    confirm: bool = False,
+) -> dict:
+    """
+    Place a trailing stop order. The stop price follows the market by
+    trail_amount and only moves in your favor, locking in gains (sell) or
+    chasing a pullback (buy). Guardrails are checked automatically.
+
+    Args:
+        symbol:       Stock ticker symbol (e.g. "AAPL")
+        quantity:     Number of shares
+        trail_amount: Size of the trail. If trail_type is "percentage" this is
+                      a percent (e.g. 5 = 5%); if "amount" it is dollars per
+                      share (e.g. 2.50).
+        side:         "sell" (trail below to protect a long) or "buy"
+                      (trail above to enter on a pullback). Default "sell".
+        trail_type:   "percentage" or "amount". Default "percentage".
+        confirm:      Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                      until re-submitted with confirm=True.
+    """
+    _ensure_auth()
+    side = side.lower()
+    if side not in ("buy", "sell"):
+        return {"error": "side must be 'buy' or 'sell'"}
+    if trail_type not in ("percentage", "amount"):
+        return {"error": "trail_type must be 'percentage' or 'amount'"}
+
+    price_list = r.get_latest_price(symbol)
+    price = float(price_list[0]) if price_list and price_list[0] else 0
+    resp = _guard_response(symbol, price * quantity, side, confirm)
+    if resp is not None:
+        return resp
+
+    if side == "sell":
+        order = r.order_sell_trailing_stop(
+            symbol, quantity, trail_amount, trailType=trail_type, timeInForce="gtc"
+        )
+    else:
+        order = r.order_buy_trailing_stop(
+            symbol, quantity, trail_amount, trailType=trail_type, timeInForce="gtc"
+        )
+    return _format_order(order)
+
+
+@mcp.tool()
+def place_buy_order_by_dollars(symbol: str, amount_in_dollars: float, confirm: bool = False) -> dict:
+    """
+    Buy a stock by dollar amount instead of share count (fractional shares).
+    Useful for sizing a position to a target dollar value without computing
+    the quantity yourself. Guardrails are checked automatically.
+
+    Args:
+        symbol:            Stock ticker symbol (e.g. "AAPL")
+        amount_in_dollars: Dollar amount to invest
+        confirm:           Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                           until re-submitted with confirm=True.
+    """
+    _ensure_auth()
+    resp = _guard_response(symbol, amount_in_dollars, "buy", confirm)
+    if resp is not None:
+        return resp
+    order = r.order_buy_fractional_by_price(symbol, amount_in_dollars, timeInForce="gfd")
+    return _format_order(order)
+
+
+@mcp.tool()
+def place_sell_order_by_dollars(symbol: str, amount_in_dollars: float, confirm: bool = False) -> dict:
+    """
+    Sell a stock by dollar amount instead of share count (fractional shares).
+    Trims a position down by a target dollar value without computing the
+    quantity yourself. Guardrails are checked automatically.
+
+    Args:
+        symbol:            Stock ticker symbol (e.g. "AAPL")
+        amount_in_dollars: Dollar amount to sell
+        confirm:           Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                           until re-submitted with confirm=True.
+    """
+    _ensure_auth()
+    resp = _guard_response(symbol, amount_in_dollars, "sell", confirm)
+    if resp is not None:
+        return resp
+    order = r.order_sell_fractional_by_price(symbol, amount_in_dollars, timeInForce="gfd")
     return _format_order(order)
 
 
@@ -1051,11 +1199,14 @@ def buy_option_to_open(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Buy to open an option contract (enter a new long position).
 
     Cost = limit_price × quantity × 100 (each contract covers 100 shares).
+    Guardrails are checked against the underlying symbol using that cost as the
+    trade value.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1065,8 +1216,14 @@ def buy_option_to_open(
         quantity:        Number of contracts to buy
         limit_price:     Maximum premium per share to pay (e.g. 1.50 = $150/contract)
         time_in_force:   "gfd" (good for day) or "gtc" (good till cancelled)
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_option_limit(
         positionEffect="open",
         creditOrDebit="debit",
@@ -1090,9 +1247,13 @@ def sell_option_to_close(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Sell to close an existing long option position.
+
+    Guardrails are checked against the underlying symbol using
+    limit_price × quantity × 100 as the trade value.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1102,8 +1263,14 @@ def sell_option_to_close(
         quantity:        Number of contracts to sell
         limit_price:     Minimum premium per share to accept
         time_in_force:   "gfd" or "gtc"
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_option_limit(
         positionEffect="close",
         creditOrDebit="credit",
@@ -1127,10 +1294,16 @@ def sell_option_to_open(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Sell to open (write) an option contract, entering a short position and
     collecting premium upfront. Requires margin approval for uncovered positions.
+
+    Guardrails are checked against the underlying symbol using the premium
+    collected (limit_price × quantity × 100) as the trade value. Note that for
+    an uncovered short the true risk can far exceed the premium collected; the
+    guardrail sizes on the premium only.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1140,8 +1313,14 @@ def sell_option_to_open(
         quantity:        Number of contracts to write
         limit_price:     Minimum premium per share to collect
         time_in_force:   "gfd" or "gtc"
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # premium collected; each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_option_limit(
         positionEffect="open",
         creditOrDebit="credit",
@@ -1165,9 +1344,13 @@ def buy_option_to_close(
     quantity: int,
     limit_price: float,
     time_in_force: str = "gfd",
+    confirm: bool = False,
 ) -> dict:
     """
     Buy to close a short option position (covers a previously written contract).
+
+    Guardrails are checked against the underlying symbol using
+    limit_price × quantity × 100 as the trade value.
 
     Args:
         symbol:          Stock ticker symbol (e.g. "AAPL")
@@ -1177,8 +1360,14 @@ def buy_option_to_close(
         quantity:        Number of contracts to buy back
         limit_price:     Maximum premium per share to pay
         time_in_force:   "gfd" or "gtc"
+        confirm:         Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                         until re-submitted with confirm=True.
     """
     _ensure_auth()
+    notional = limit_price * quantity * 100  # each contract covers 100 shares
+    resp = _guard_response(symbol, notional, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_option_limit(
         positionEffect="close",
         creditOrDebit="debit",
@@ -1298,29 +1487,41 @@ def get_crypto_holdings() -> list:
 
 
 @mcp.tool()
-def place_crypto_market_buy(symbol: str, amount_in_dollars: float) -> dict:
+def place_crypto_market_buy(symbol: str, amount_in_dollars: float, confirm: bool = False) -> dict:
     """
     Buy cryptocurrency with a specified dollar amount.
 
     Args:
         symbol:           Crypto symbol (e.g. "BTC", "ETH")
         amount_in_dollars: Dollar amount to spend
+        confirm:          Trades above REQUIRE_CONFIRMATION_ABOVE are not placed
+                          until re-submitted with confirm=True.
     """
     _ensure_auth()
+    resp = _guard_response(symbol, amount_in_dollars, "buy", confirm)
+    if resp is not None:
+        return resp
     order = r.order_buy_crypto_by_price(symbol, amount_in_dollars, timeInForce="gtc")
     return _format_crypto_order(order)
 
 
 @mcp.tool()
-def place_crypto_market_sell(symbol: str, quantity: float) -> dict:
+def place_crypto_market_sell(symbol: str, quantity: float, confirm: bool = False) -> dict:
     """
     Sell a specified quantity of cryptocurrency.
 
     Args:
         symbol:   Crypto symbol (e.g. "BTC", "ETH")
         quantity: Amount of crypto to sell
+        confirm:  Trades above REQUIRE_CONFIRMATION_ABOVE are not placed until
+                  re-submitted with confirm=True.
     """
     _ensure_auth()
+    quote = r.get_crypto_quote(symbol, info=None) or {}
+    price = float(quote.get("mark_price") or quote.get("bid_price") or 0)
+    resp = _guard_response(symbol, price * quantity, "sell", confirm)
+    if resp is not None:
+        return resp
     order = r.order_sell_crypto_by_quantity(symbol, quantity, timeInForce="gtc")
     return _format_crypto_order(order)
 

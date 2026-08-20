@@ -59,6 +59,34 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 }
 ```
 
+## Safety Guardrails
+
+Every stock, crypto, and options order routes through a guardrail check before
+it is sent to Robinhood. Limits are configured via environment variables (see
+`.env.example`): blocked/allowed symbol lists, max single-trade size, minimum
+cash reserve, max position concentration, and a daily-loss halt. If a hard
+limit is violated the order is not placed and the tool returns
+`{"blocked": True, "reasons": [...]}`.
+
+For options, guardrails are checked against the **underlying symbol**, and the
+trade value is the contract cost/premium: `limit_price × quantity × 100`. Opens
+of a long and closes of a short (debits, cash out) are treated as buys; closes
+of a long and writes (credits, cash in) are treated as sells. Note: for an
+uncovered short the true risk can exceed the premium collected — the guardrail
+sizes on the premium only.
+
+**Large-trade confirmation.** Orders whose dollar value exceeds
+`REQUIRE_CONFIRMATION_ABOVE` (default `$500`) are not placed on the first call —
+the order tool returns `{"confirmation_required": True, ...}` describing the
+trade. Re-call the same tool with `confirm=True` to place it. Orders at or
+below the threshold place normally. Hard blocks always take precedence over the
+confirmation prompt.
+
+| Tool | Description |
+|---|---|
+| `get_trading_limits` | Show all active guardrail values currently configured |
+| `check_trade` | Dry-run a proposed trade against the guardrails (incl. the confirmation gate) without placing it |
+
 ## Available Tools
 
 ### Account & Portfolio
@@ -90,6 +118,9 @@ Add to your `claude_desktop_config.json` (or MCP settings):
 | `place_limit_sell_order` | Limit sell |
 | `place_stop_loss_order` | Stop-loss sell (triggers market order when price drops to stop) |
 | `place_stop_limit_order` | Stop-limit buy or sell |
+| `place_trailing_stop_order` | Trailing stop (buy or sell) — stop follows the market to lock in gains or chase a pullback, by percent or dollar trail |
+| `place_buy_order_by_dollars` | Buy a fractional position sized by dollar amount instead of share count |
+| `place_sell_order_by_dollars` | Sell a fractional position sized by dollar amount instead of share count |
 | `get_open_orders` | All pending/unfilled orders |
 | `get_order_history` | Recent order history |
 | `cancel_order` | Cancel a specific order by ID |
