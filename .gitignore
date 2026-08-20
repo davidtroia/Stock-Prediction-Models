@@ -2,3 +2,6 @@
 *ipynb_checkpoints
 *__pycache__
 realtime-agent/agent.log
+
+# Never commit real credentials. .env.example files are tracked; .env is not.
+.env
