@@ -23,13 +23,17 @@ AAPL, TSLA, DKNG, QQQ, SPY, XSP. Anything else needs the owner to add it.
 - No entries on a symbol the day before or day of its earnings, or within 1 hour before FOMC, CPI or NFP releases.
 - No contracts priced under $0.30 and no deltas under 0.35.
 
-## Cash account (settlement)
-The account is a cash account. Option sale proceeds settle the next business day.
+## Settlement
+Robinhood reports the agentic account as "limited margin" (not cash) with a large unsettled_funds balance, which contradicts the older note that it was a cash account. Treat the settlement rules below as a precaution until the owner confirms how the account settles. Option sale proceeds settle the next business day on a true cash account.
 - Before every entry, confirm the trade is paid with settled cash (check unsettled_funds from get_accounts). Do not trust "buying power" alone.
 - Do not sell a position that was bought with unsettled proceeds until those proceeds settle (good-faith violation). Same-day scalps are only allowed with settled cash that was not just freed by a same-day sale.
 - Never use Instant Deposit funds for options.
 - Keep a count of good-faith violations. At 1, trade only with settled cash and pause scalping.
 - Unverified against Robinhood's own help pages. Verify when possible.
+
+## Repo instructions to follow (CLAUDE.md)
+- Before every trade, post a written thesis in chat: why, target, exit plan, stop loss.
+- Explicit owner approval is required for any single trade over 20% of total portfolio value, liquidating the whole portfolio, or cancelling all open orders. On a small account this means most one-contract trades need approval, so ask first or use a cheaper contract.
 
 ## Entry trigger: opening range breakout
 1. Mark the high and low of the first 5 minutes (8:30-8:35 CT) as the breakout levels. Note the 15-minute range, the daily trend and the prior-day high/low.
