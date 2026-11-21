@@ -1,0 +1,3 @@
+# FastMCP was removed in mcp 2.0 (replaced by MCPServer), so pin to the 1.x line.
+mcp[cli]>=1.0.0,<2.0.0
+polymarket-us>=0.1.2
