@@ -6,8 +6,10 @@ Re-read this file at the start of every scheduled check. Take the date and time 
 - Full autonomy to trade the agentic account without asking permission each time. Do the work, check it twice before every buy or sell.
 - Style: reversal plays plus trend-day scalps. Calls when it is a strong, confirmed trend up. Puts when a gap or run fades. Watch both sides.
 
-## Universe (only these)
-AAPL, TSLA, DKNG, QQQ, SPY, XSP. XSP is index-based and cash-settled. Anything else needs the owner to add it.
+## Universe
+Core: AAPL, TSLA, DKNG, QQQ, SPY, XSP. XSP is index-based and cash-settled.
+
+News-catalyst names (added by the owner 2026-11-25): any liquid US stock or ETF that is facing big news is fair game, such as a pivotal trial readout or FDA decision, an earnings gap, M&A, a guidance shock, or a major macro or sector move. See "News-catalyst setups" below for how to trade them. Anything outside the core list still needs a written thesis, and VIAV stays banned.
 
 ## Hard no's
 - Never touch VIAV.
@@ -25,6 +27,15 @@ AAPL, TSLA, DKNG, QQQ, SPY, XSP. XSP is index-based and cash-settled. Anything e
 5. Pullback entries are fine: buy a retest of the broken level or VWAP rather than the spike.
 6. A failed breakout that falls back into the range is a fade setup in the other direction.
 
+## News-catalyst setups
+For names outside the core list that are moving on big news:
+1. Read the news before the chart. Note what actually happened (data, filing, deal terms), whether it is already priced in, and whether a financing or dilution filing (424B5, S-3, ATM) followed.
+2. Do not buy the first spike. The first 15-30 minutes after a gap are for watching. Prefer a pullback that holds a level (VWAP, the opening-range high, the prior-day close) or a failed move that reverses (fade).
+3. After a catalyst has passed, a stock that is fading on falling volume is a fade or a no-trade, not a long.
+4. The 8:50 CT earliest-entry rule and the no-entries-after-11:00-CT rule still apply, but a new headline during the session can justify a fresh look.
+5. Shares are fine when the options are wide or illiquid. For options, accept a wider spread (up to about 15% of mid) and lower open interest, but only if the mid is real. Use limit orders.
+6. Every trade still needs a written thesis, a target, an exit plan and a stop before it is placed.
+
 ## Entry checklist (all must pass)
 1. Check account positions and open orders first. Do not double up on the owner's positions.
 2. The opening range trigger above is met and agrees with the daily trend.
@@ -38,7 +49,7 @@ AAPL, TSLA, DKNG, QQQ, SPY, XSP. XSP is index-based and cash-settled. Anything e
 
 ## Sizing and daily limits
 - Weekly loss limit: $150 by default. The owner suspended it for the week of 10/5; ask or confirm if unclear.
-- Per-trade cap: at most 25% of account value (about 3% account risk at a 13% stop).
+- Per-trade size cap: none. The owner lifted it on 2026-11-25, and this overrides the 25% cap here and the 20% approval rule in CLAUDE.md. Size each trade by the thesis and the stop, and say plainly in the thesis how much of the account is at risk.
 - Maximum 3 trades per day.
 - After 2 losing trades in a day, stop trading for the day. No revenge trades.
 
