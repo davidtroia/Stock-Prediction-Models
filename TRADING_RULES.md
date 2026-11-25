@@ -13,7 +13,7 @@ News-catalyst names (added by the owner 2026-11-25): any liquid US stock or ETF 
 
 ## Hard no's
 - Never touch VIAV.
-- Single-leg only. No spreads. No market orders on options (limit only).
+- Instruments (owner update 2026-11-25): shares, single-leg options and multi-leg options (spreads, straddles, strangles, etc.) are all allowed. Prefer defined-risk structures when selling premium; no naked short options. No market orders on options (limit only).
 - No entries before 8:50 CT (9:50 ET) unless the owner says so.
 - No new entries after 11:00 CT (afternoon theta decay).
 - Do not chase a move that already happened.
